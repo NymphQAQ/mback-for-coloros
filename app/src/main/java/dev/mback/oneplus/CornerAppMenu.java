@@ -1,240 +1,360 @@
 package dev.mback.oneplus;
 
+import android.animation.ValueAnimator;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.PixelFormat;
-import android.graphics.drawable.GradientDrawable;
+import android.graphics.RadialGradient;
+import android.graphics.RectF;
+import android.graphics.Shader;
+import android.graphics.drawable.Drawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.WindowManager;
-import android.widget.FrameLayout;
-import android.widget.ImageView;
-import android.widget.LinearLayout;
-import android.widget.TextView;
-import de.robv.android.xposed.XposedBridge;
+import android.view.animation.DecelerateInterpolator;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.LinkedHashMap;
-import java.util.Map;
+
+import de.robv.android.xposed.XposedBridge;
 
 /**
- * Temporary SystemUI-owned launcher sheet.
- * It never alters the real mBack touch geometry and is removed after selection.
+ * Flyme fan, not a bottom sheet. Icons are arranged along a rising diagonal
+ * arc from either bottom corner and are selected with the same swipe.
  */
 final class CornerAppMenu {
     static final String ENABLE_KEY = "mback_corner_menu_enabled";
     static final String APPS_KEY = "mback_corner_menu_apps";
     static final String PREVIEW_KEY = "mback_corner_preview";
-    private static final String TAG = "[MBack-Corner]";
     static final String DEFAULT_APPS =
             "com.tencent.mm,com.coloros.calculator,com.coloros.calendar,com.coloros.filemanager,com.android.settings,com.netease.cloudmusic";
+    private static final String TAG = "[MBack-Corner]";
 
     private final Context context;
-    private final WindowManager manager;
-    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final WindowManager windowManager;
     private final FreeformLauncher launcher;
-    private View window;
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private FanView fan;
+    private WindowManager.LayoutParams layout;
     private boolean opened;
-    private final Map<View, String> selectableTiles = new LinkedHashMap<>();
+    private Runnable dismiss;
+    private final Runnable timeout = () -> { hide(); };
 
     CornerAppMenu(Context context) {
         this.context = context;
-        this.manager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+        this.windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
         this.launcher = new FreeformLauncher(context);
     }
 
     boolean isOpened() { return opened; }
 
+    boolean isGestureActive() {
+        return opened && layout != null
+                && (layout.flags & WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0;
+    }
+
+    void releaseGesture() { allowTaps(); }
+
     void show(int side) {
-        if (opened) hide();
-        selectableTiles.clear();
-        if (context.getResources().getConfiguration().orientation !=
-                android.content.res.Configuration.ORIENTATION_PORTRAIT) return;
+        show(side, false);
+    }
+
+    void showForGesture(int side) {
+        show(side, true);
+    }
+
+    private void show(int side, boolean activeGesture) {
+        hide();
+        if (context.getResources().getConfiguration().orientation
+                != android.content.res.Configuration.ORIENTATION_PORTRAIT) return;
         try {
-            final int d = dp(1);
-            LinearLayout sheet = new LinearLayout(context);
-            sheet.setOrientation(LinearLayout.VERTICAL);
-            sheet.setPadding(dp(12), dp(12), dp(12), dp(10));
-            GradientDrawable bg = new GradientDrawable(
-                    GradientDrawable.Orientation.TOP_BOTTOM,
-                    new int[]{0xF2F7F9FF, 0xEDF2F4FB});
-            bg.setCornerRadius(dp(28));
-            bg.setStroke(dp(1), 0x99FFFFFF);
-            sheet.setBackground(bg);
-            sheet.setElevation(dp(16));
-
-            LinearLayout header = new LinearLayout(context);
-            header.setGravity(Gravity.CENTER_VERTICAL);
-            TextView label = new TextView(context);
-            label.setText("小窗快捷启动   ↗");
-            label.setTextSize(16f);
-            label.setTextColor(0xFF172B40);
-            label.setPadding(dp(10), 0, 0, 0);
-            header.addView(label, new LinearLayout.LayoutParams(0, dp(36), 1));
-            TextView close = new TextView(context);
-            close.setText("✕");
-            close.setTextSize(20f);
-            close.setGravity(Gravity.CENTER);
-            close.setTextColor(0xFF5A6470);
-            header.addView(close, new LinearLayout.LayoutParams(dp(42), dp(42)));
-            close.setOnClickListener(v -> hide());
-            sheet.addView(header);
-
-            List<String> apps = availableApps();
-            if (apps.isEmpty()) {
-                TextView empty = new TextView(context);
-                empty.setText("还没有可用应用，请到 MBack 设置添加");
-                empty.setTextSize(14);
-                empty.setTextColor(Color.DKGRAY);
-                empty.setGravity(Gravity.CENTER);
-                sheet.addView(empty, new LinearLayout.LayoutParams(-1, dp(106)));
-            } else {
-                LinearLayout row = new LinearLayout(context);
-                row.setGravity(Gravity.CENTER_HORIZONTAL | Gravity.BOTTOM);
-                row.setOrientation(LinearLayout.HORIZONTAL);
-                row.setPadding(0, dp(8), 0, dp(4));
-                PackageManager pm = context.getPackageManager();
-                for (int i = 0; i < apps.size(); i++) {
-                    String pkg = apps.get(i);
-                    LinearLayout tile = new LinearLayout(context);
-                    tile.setGravity(Gravity.CENTER);
-                    tile.setOrientation(LinearLayout.VERTICAL);
-                    ImageView icon = new ImageView(context);
-                    try { icon.setImageDrawable(pm.getApplicationIcon(pkg)); }
-                    catch (Exception ignored) { icon.setImageResource(android.R.drawable.sym_def_app_icon); }
-                    tile.addView(icon, new LinearLayout.LayoutParams(dp(43), dp(43)));
-                    TextView name = new TextView(context);
-                    try { name.setText(pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0))); }
-                    catch (Exception e) { name.setText(pkg); }
-                    name.setTextSize(10);
-                    name.setMaxLines(1);
-                    name.setEllipsize(android.text.TextUtils.TruncateAt.END);
-                    name.setTextColor(0xFF32465F);
-                    name.setGravity(Gravity.CENTER);
-                    name.setPadding(dp(1), dp(7), dp(1), 0);
-                    tile.addView(name, new LinearLayout.LayoutParams(dp(51), dp(24)));
-                    LinearLayout.LayoutParams tileParams = new LinearLayout.LayoutParams(0, dp(102), 1);
-                    tile.setPadding(dp(2), 0, dp(2), 0);
-                    row.addView(tile, tileParams);
-                    // A shallow arc that echoes the Flyme corner shortcut fan.
-                    int[] lifts = {0, 10, 18, 18, 10, 0};
-                    tile.setTranslationY(-dp(lifts[Math.min(i, lifts.length - 1)]));
-                    selectableTiles.put(tile, pkg);
-                    final String target = pkg;
-                    tile.setOnClickListener(v -> {
-                        hide();
-                        launcher.open(target);
-                    });
-                }
-                sheet.addView(row, new LinearLayout.LayoutParams(-1, dp(120)));
-            }
-
-            TextView footer = new TextView(context);
-            footer.setGravity(Gravity.CENTER);
-            footer.setText("点击以 ColorOS 小窗打开 · 应用可在 MBack 中调整");
-            footer.setTextColor(0xFF647388);
-            footer.setTextSize(11);
-            sheet.addView(footer, new LinearLayout.LayoutParams(-1, dp(30)));
-
-            FrameLayout outer = new FrameLayout(context);
-            FrameLayout.LayoutParams card = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
-            card.setMargins(dp(16), 0, dp(16), dp(28));
-            outer.addView(sheet, card);
-            outer.setOnTouchListener((v, ev) -> {
-                if (ev.getActionMasked() == MotionEvent.ACTION_OUTSIDE) { hide(); return true; }
-                return false;
-            });
-
+            ArrayList<AppItem> apps = loadApps();
+            FanView view = new FanView(context, side, apps);
             WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                    WindowManager.LayoutParams.MATCH_PARENT, dp(265),
+                    WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                            | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                            | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                            | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                            | (activeGesture ? WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE : 0),
                     PixelFormat.TRANSLUCENT);
-            lp.gravity = Gravity.BOTTOM;
-            lp.setTitle("MBack Corner Apps");
-            window = outer;
-            manager.addView(outer, lp);
+            lp.gravity = Gravity.TOP | Gravity.LEFT;
+            lp.x = 0;
+            lp.y = 0;
+            lp.setTitle("MBack Flyme Fan");
+            windowManager.addView(view, lp);
+            layout = lp;
+            fan = view;
             opened = true;
-            outer.setAlpha(0f);
-            outer.setTranslationY(dp(40));
-            outer.animate().alpha(1f).translationY(0f).setDuration(190).start();
-            XposedBridge.log(TAG + " menu opened apps=" + apps.size() + " side=" + side);
-        } catch (Throwable error) {
-            XposedBridge.log(TAG + " menu show failed: " + error);
+            view.enter();
+            if (activeGesture) main.postDelayed(() -> { if (isGestureActive()) allowTaps(); }, 1150);
+            resetTimeout();
+            XposedBridge.log(TAG + " Flyme fan shown side=" + side + " icons=" + apps.size());
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + " fan show error: " + t);
             hide();
         }
     }
 
-    void highlightBySwipe(float rawX, float rawY) {
-        if (!opened) return;
-        for (View tile : selectableTiles.keySet()) {
-            boolean over = inside(tile, rawX, rawY);
-            tile.setScaleX(over ? 1.09f : 1f);
-            tile.setScaleY(over ? 1.09f : 1f);
-            tile.setAlpha(over ? 1f : .87f);
-        }
+    private void resetTimeout() {
+        main.removeCallbacks(timeout);
+        main.postDelayed(timeout, 6500);
     }
 
-    private boolean inside(View view, float x, float y) {
-        if (!view.isShown() || view.getWidth() <= 0) return false;
-        int[] pos = new int[2];
-        view.getLocationOnScreen(pos);
-        return x >= pos[0] && x < pos[0] + view.getWidth()
-                && y >= pos[1] && y < pos[1] + view.getHeight();
+    void highlightBySwipe(float rawX, float rawY) {
+        if (!opened || fan == null) return;
+        fan.select(rawX, rawY);
+        resetTimeout();
     }
 
     boolean chooseBySwipe(float rawX, float rawY) {
-        if (!opened) return false;
-        for (Map.Entry<View, String> entry : selectableTiles.entrySet()) {
-            View tile = entry.getKey();
-            if (inside(tile, rawX, rawY)) {
-                final String pkg = entry.getValue();
-                XposedBridge.log(TAG + " swipe-selected: " + pkg);
-                hide();
-                launcher.open(pkg);
-                return true;
-            }
+        if (!opened || fan == null) return false;
+        AppItem item = fan.hit(rawX, rawY);
+        if (item != null) {
+            XposedBridge.log(TAG + " swipe-selected " + item.packageName);
+            hide();
+            launcher.open(item.packageName);
+            return true;
         }
+        // The input monitor owned the entire originating swipe. Only AFTER
+        // the user releases do we let the fan receive new taps, preventing
+        // the overlay from stealing a half-finished native gesture stream.
+        allowTaps();
         return false;
     }
 
+    private void allowTaps() {
+        if (fan == null || layout == null
+                || (layout.flags & WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0) return;
+        layout.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+        try { windowManager.updateViewLayout(fan, layout); }
+        catch (Throwable t) { XposedBridge.log(TAG + " enable tap error: " + t); }
+    }
+
     void hide() {
-        selectableTiles.clear();
-        View old = window;
-        window = null;
+        main.removeCallbacks(timeout);
+        FanView old = fan;
+        fan = null;
+        layout = null;
         opened = false;
         if (old != null) {
-            try { manager.removeViewImmediate(old); }
-            catch (Throwable error) { XposedBridge.log(TAG + " hide failed: " + error); }
+            old.stop();
+            try { windowManager.removeViewImmediate(old); }
+            catch (Throwable t) { XposedBridge.log(TAG + " remove fan error: " + t); }
         }
     }
 
-    private List<String> availableApps() {
-        String raw = Settings.Global.getString(context.getContentResolver(), APPS_KEY);
-        if (raw == null || raw.isEmpty()) raw = DEFAULT_APPS;
-        ArrayList<String> result = new ArrayList<>();
+    private ArrayList<AppItem> loadApps() {
+        ArrayList<AppItem> out = new ArrayList<>();
+        String csv = Settings.Global.getString(context.getContentResolver(), APPS_KEY);
+        if (csv == null || csv.isEmpty()) csv = DEFAULT_APPS;
         PackageManager pm = context.getPackageManager();
-        for (String piece : raw.split(",")) {
-            String pkg = CornerGesture.sanitize(piece.trim());
-            if (pkg == null || result.contains(pkg)) continue;
-            if (pm.getLaunchIntentForPackage(pkg) == null) continue;
-            result.add(pkg);
-            if (result.size() >= 6) break;
+        for (String part : csv.split(",")) {
+            String packageName = CornerGesture.sanitize(part.trim());
+            if (packageName == null || "none".equals(packageName)) continue;
+            if (pm.getLaunchIntentForPackage(packageName) == null) continue;
+            boolean duplicate = false;
+            for (AppItem item : out) if (item.packageName.equals(packageName)) duplicate = true;
+            if (duplicate) continue;
+            try {
+                Drawable icon = pm.getApplicationIcon(packageName);
+                String name = String.valueOf(pm.getApplicationLabel(pm.getApplicationInfo(packageName, 0)));
+                out.add(new AppItem(packageName, name, icon.mutate()));
+            } catch (Exception ignored) {}
+            if (out.size() == 6) break;
         }
-        return result;
+        return out;
     }
 
-    private int dp(float count) {
-        return Math.round(context.getResources().getDisplayMetrics().density * count);
+    private static final class AppItem {
+        final String packageName, label;
+        final Drawable icon;
+        AppItem(String name, String label, Drawable drawable) {
+            packageName = name;
+            this.label = label;
+            icon = drawable;
+        }
+    }
+
+    private final class FanView extends View {
+        private final int side;
+        private final ArrayList<AppItem> apps;
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path clip = new Path();
+        private final float density;
+        private float reveal;
+        private int selected = -1;
+        private ValueAnimator entrance;
+        private final float[] xs = new float[6];
+        private final float[] ys = new float[6];
+
+        FanView(Context context, int side, ArrayList<AppItem> apps) {
+            super(context);
+            this.side = side;
+            this.apps = apps;
+            density = context.getResources().getDisplayMetrics().density;
+            setLayerType(View.LAYER_TYPE_SOFTWARE, null); // clean circular shadows
+            setClickable(true);
+            setContentDescription("Flyme 扇形小窗快捷菜单");
+        }
+
+        void enter() {
+            entrance = ValueAnimator.ofFloat(0f, 1f);
+            entrance.setDuration(210);
+            entrance.setInterpolator(new DecelerateInterpolator(2f));
+            entrance.addUpdateListener(a -> {
+                reveal = (Float) a.getAnimatedValue();
+                invalidate();
+            });
+            entrance.start();
+        }
+
+        void stop() {
+            if (entrance != null) entrance.cancel();
+        }
+
+        private float d(float dp) { return dp * density; }
+
+        private float originX() {
+            return side == CornerGesture.LEFT ? d(34f) : getWidth() - d(34f);
+        }
+
+        private float originY() { return getHeight() - d(36f); }
+
+        private void layoutIcons() {
+            float cx = originX(), cy = originY();
+            for (int i = 0; i < apps.size(); i++) {
+                // Six independent rays gradually fan toward the screen center.
+                // The almost-diagonal arc follows the Flyme small-window demo:
+                // colored round icons coming out of a blue three-dot launcher.
+                float radius = d(77f + 49f * i);
+                double angle = Math.toRadians(45f + i * 1.9f);
+                float horizontal = (float) (radius * Math.cos(angle));
+                float vertical = (float) (radius * Math.sin(angle));
+                xs[i] = cx + (side == CornerGesture.LEFT ? horizontal : -horizontal);
+                ys[i] = cy - vertical;
+            }
+        }
+
+        @Override protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            if (getWidth() <= 0 || getHeight() <= 0) return;
+            layoutIcons();
+            // Barely visible backdrop, never a rectangular sheet or title bar.
+            paint.reset();
+            paint.setAntiAlias(true);
+            paint.setColor(Color.argb(Math.round(38 * reveal), 0, 0, 0));
+            canvas.drawRect(0, 0, getWidth(), getHeight(), paint);
+
+            // Warm corner glow subtly links the fan to the originating thumb.
+            paint.setShader(new RadialGradient(originX(), originY(), d(340),
+                    new int[]{0x2BFFFFFF, 0x0CFFFFFF, 0x00FFFFFF},
+                    new float[]{0f, .55f, 1f}, Shader.TileMode.CLAMP));
+            canvas.drawCircle(originX(), originY(), d(340), paint);
+            paint.setShader(null);
+
+            for (int i = apps.size() - 1; i >= 0; i--) drawIcon(canvas, apps.get(i), i);
+            drawMoreButton(canvas);
+            paint.clearShadowLayer();
+        }
+
+        private void drawIcon(Canvas canvas, AppItem item, int index) {
+            float delay = index * .055f;
+            float progress = Math.max(0f, Math.min(1f, (reveal - delay) / (1f - delay)));
+            float cx = originX() + (xs[index] - originX()) * progress;
+            float cy = originY() + (ys[index] - originY()) * progress;
+            float iconRadius = d(selected == index ? 29 : 24);
+            iconRadius *= .60f + .40f * progress;
+
+            canvas.save();
+            canvas.scale(progress, progress, cx, cy);
+            paint.reset();
+            paint.setAntiAlias(true);
+            paint.setColor(0x44FFFFFF);
+            paint.setShadowLayer(d(5), 0f, d(3), 0x55000000);
+            canvas.drawCircle(cx, cy, iconRadius + d(2), paint);
+            paint.clearShadowLayer();
+
+            // Flyme uses circular app icons with a clean white rim.
+            paint.setColor(0xF5FFFFFF);
+            canvas.drawCircle(cx, cy, iconRadius + d(selected == index ? 3.4f : 1.4f), paint);
+            canvas.save();
+            clip.reset();
+            clip.addCircle(cx, cy, iconRadius, Path.Direction.CW);
+            canvas.clipPath(clip);
+            Drawable drawable = item.icon;
+            drawable.setBounds(Math.round(cx - iconRadius), Math.round(cy - iconRadius),
+                    Math.round(cx + iconRadius), Math.round(cy + iconRadius));
+            drawable.draw(canvas);
+            canvas.restore();
+            if (selected == index) {
+                paint.setColor(Color.WHITE);
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(d(2));
+                canvas.drawCircle(cx, cy, iconRadius + d(4), paint);
+                paint.setStyle(Paint.Style.FILL);
+            }
+            canvas.restore();
+        }
+
+        private void drawMoreButton(Canvas canvas) {
+            float cx = originX(), cy = originY();
+            paint.reset();
+            paint.setAntiAlias(true);
+            paint.setColor(0xFF158DFF);
+            paint.setShadowLayer(d(6), 0f, d(3), 0x48000000);
+            canvas.drawCircle(cx, cy, d(23), paint);
+            paint.clearShadowLayer();
+            paint.setColor(Color.WHITE);
+            for (int i = -1; i <= 1; i++) {
+                canvas.drawCircle(cx + d(i * 7.3f), cy, d(3.1f), paint);
+            }
+        }
+
+        AppItem hit(float rawX, float rawY) {
+            int[] pos = new int[2];
+            getLocationOnScreen(pos);
+            float x = rawX - pos[0], y = rawY - pos[1];
+            layoutIcons();
+            for (int i = 0; i < apps.size(); i++) {
+                float dx = x - xs[i], dy = y - ys[i];
+                if (dx * dx + dy * dy < d(36) * d(36)) return apps.get(i);
+            }
+            return null;
+        }
+
+        void select(float rawX, float rawY) {
+            AppItem hit = hit(rawX, rawY);
+            int next = -1;
+            for (int i = 0; i < apps.size(); i++) if (apps.get(i) == hit) next = i;
+            if (selected != next) {
+                selected = next;
+                invalidate();
+            }
+        }
+
+        @Override public boolean onTouchEvent(MotionEvent e) {
+            if (e.getActionMasked() == MotionEvent.ACTION_UP) {
+                if (chooseBySwipe(e.getRawX(), e.getRawY())) return true;
+                // The triple-dot origin also closes the fan. A later gesture
+                // opens it again, and the MBack settings control app selection.
+                hide();
+                return true;
+            }
+            if (e.getActionMasked() == MotionEvent.ACTION_MOVE) {
+                highlightBySwipe(e.getRawX(), e.getRawY());
+                return true;
+            }
+            return true;
+        }
     }
 }

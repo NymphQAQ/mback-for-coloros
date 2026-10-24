@@ -30,7 +30,7 @@ stubs/ 下只有编译期 legacy Xposed API 的声明，脚本不会把这些 st
 ## 启用方式
 
 1. 安装 APK。
-2. 在 Vector（或兼容 Legacy Xposed 的 LSPosed）中启用 dev.mback.oneplus，作用域设置为 com.android.systemui。
+2. 在 Vector（或兼容 Legacy Xposed 的 LSPosed）中启用 dev.mback.oneplus，作用域设置为 com.android.systemui 与 com.android.launcher（后者用于拦截多任务前段）。
 3. 重启 SystemUI 或重启手机，让 Xposed 注入生效。
 4. 打开 MBack，开启“启用轻触返回”，首次写入需要 root 授权。
 5. 按需开启“显示常驻状态通知”。若通知不显示，请核实通知权限及“MBack 状态”渠道。
@@ -40,7 +40,19 @@ stubs/ 下只有编译期 legacy Xposed API 的声明，脚本不会把这些 st
 ```bash
 adb shell su -c '/data/adb/lspd/cli modules enable dev.mback.oneplus'
 adb shell su -c '/data/adb/lspd/cli scope add dev.mback.oneplus com.android.systemui/0'
+adb shell su -c '/data/adb/lspd/cli scope add dev.mback.oneplus com.android.launcher/0'
 ```
+
+## v0.6.4：Flyme 扇形 UI 与原生导航手势前段屏蔽
+
+- 去掉 v0.5 的横向浅色卡片、标题和文字说明，改为参考 Flyme 8/9 小窗菜单的「蓝色三白点入口 + 逐级弧形展开的圆形应用图标」，带轻微遮罩、弹出动画、白色选中圈和触摸高亮，左右角镜像。可在设置页预览。
+- 核心滑选仍支持一笔斜滑到图标松手，或呼出扇形后再点图标。小窗启动仍由 ColorOS 原生 `android.activity.windowingMode=100` 负责。
+- 为避免刚开始斜滑就露出系统返回箭头或多任务缩略图，新增对 **SystemUI 的 EdgeBackGestureHandler** 和 **一加桌面 com.android.launcher 的 OplusBaseTouchInteractionService** 的 Xposed 入口过滤。只有触点从竖屏的两个下角区域开始时才过滤；中间上滑和其他屏幕位置维持系统原行为。
+- 被动 SPY 输入监听贯穿完整斜滑过程，不调用 `pilferPointers`，避免 ColorOS 把同一触摸拆断成 `ACTION_CANCEL`。两个透明角落区域拦住对下层 App 的点击穿透，且仅占两侧底角，不覆盖中间的小白条。`FLAG_LAYOUT_IN_SCREEN` + `setFitInsetsTypes(0)` 保证角落触摸区延伸至物理屏幕底边；息屏/锁屏不接管，解锁后重试创建，横屏时清理遮罩。
+- **作用域新增 com.android.launcher**：必须在 Vector / LSPosed 中将本模块作用域设为 `com.android.systemui` **与** `com.android.launcher`，然后重启这两个进程或重启手机。未勾选桌面作用域不能保证消除多任务开头动画。
+- 这是参考 Flyme 官方公开演示的高保真重绘，不是 Flyme 原版源码移植，也不声称像素级一致。Flyme 各代版本图标角度、模糊与动效不同，且 ColorOS 的实际小窗控制界面仍由 ColorOS 提供。当前只适配一加 15 的 ColorOS 17，横屏不启用。由于输入回调时序和 ROM 升级存在不确定性，不能保证所有第三方应用、锁屏及特定全屏场景下与魅族原机完全一致。
+- 真机验证（PLK110/Android 17）：在左/右底角，SystemUI edge-back 与 Launcher Quickstep 均拦截该段输入的 `ACTION_DOWN`，未再进入系统手势处理；斜滑选择成功打开 ColorOS 日历/计算器等原生悬浮任务，背景原 App 保持。`dumpsys input` 确认两块 `242×180px` 输入区分别贴合物理底边 `[0,2592]-[242,2772]`、`[1030,2592]-[1272,2772]`；屏幕中部普通上滑回桌面成功。
+- 一键紧急关闭：`adb shell su -c 'settings put global mback_corner_menu_enabled 0'`；关闭时输入监视与透明底角区域都会移除。若 ROM 升级导致异常，还可在 Vector 禁用模块或取消 Launcher 作用域后重启对应进程。
 
 ## v0.5.0：左右下角斜滑小窗菜单
 

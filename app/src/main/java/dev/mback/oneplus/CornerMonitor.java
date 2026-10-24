@@ -16,20 +16,23 @@ import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 
 /**
- * SystemUI owns MONITOR_INPUT. A SPY input monitor sees corner gestures before
- * Launcher's separate 'swipe-up' receiver takes ownership.
- * Pilfer ONLY when the gesture moves diagonally toward the center.
+ * Observe the whole finger path without pilfering. Bottom-corner input
+ * shields prevent app click-through. Xposed guards in Launcher/SystemUI stop
+ * Quickstep/Back from consuming these reserved corner gestures or showing
+ * their first-frame previews. Center navigation gestures are unaffected.
  */
 final class CornerMonitor {
     private static final String TAG = "[MBack-Corner]";
     private final Context context;
     private final CornerAppMenu menu;
+    private final CornerTouchShield shields;
     private InputMonitor monitor;
     private Receiver receiver;
 
     CornerMonitor(Context context, CornerAppMenu menu) {
         this.context = context;
         this.menu = menu;
+        this.shields = new CornerTouchShield(context);
     }
 
     void start() {
@@ -37,19 +40,20 @@ final class CornerMonitor {
         try {
             InputManager inputManager = context.getSystemService(InputManager.class);
             if (inputManager == null) throw new IllegalStateException("missing InputManager");
-            Object result = XposedHelpers.callMethod(inputManager,
+            monitor = (InputMonitor) XposedHelpers.callMethod(inputManager,
                     "monitorGestureInput", "MBack corner gestures", 0);
-            monitor = (InputMonitor) result;
             InputChannel channel = monitor.getInputChannel();
             receiver = new Receiver(channel, Looper.getMainLooper());
-            XposedBridge.log(TAG + " input monitor started");
+            shields.start();
+            XposedBridge.log(TAG + " corner monitor and transparent shields started");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + " input monitor unavailable: " + t);
+            XposedBridge.log(TAG + " corner monitor unavailable: " + t);
             stop();
         }
     }
 
     void stop() {
+        shields.stop();
         if (receiver != null) {
             receiver.dispose();
             receiver = null;
@@ -63,15 +67,14 @@ final class CornerMonitor {
     private final class Receiver extends InputEventReceiver {
         private int side;
         private float downX, downY;
-        private boolean pilfered;
 
         Receiver(InputChannel channel, Looper looper) { super(channel, looper); }
 
         @Override public void onInputEvent(InputEvent event) {
             try {
                 if (event instanceof MotionEvent) onTouch((MotionEvent) event);
-            } catch (Throwable t) {
-                XposedBridge.log(TAG + " monitor handling failed: " + t);
+            } catch (Throwable error) {
+                XposedBridge.log(TAG + " corner touch error: " + error);
             } finally {
                 finishInputEvent(event, false);
             }
@@ -79,15 +82,29 @@ final class CornerMonitor {
 
         private void onTouch(MotionEvent event) {
             int action = event.getActionMasked();
+            if (menu.isGestureActive()) {
+                if (action == MotionEvent.ACTION_MOVE) {
+                    menu.highlightBySwipe(event.getRawX(), event.getRawY());
+                } else if (action == MotionEvent.ACTION_UP) {
+                    boolean launched = menu.chooseBySwipe(event.getRawX(), event.getRawY());
+                    XposedBridge.log(TAG + " drag finished launched=" + launched);
+                    side = CornerGesture.NONE;
+                } else if (action == MotionEvent.ACTION_CANCEL) {
+                    menu.releaseGesture();
+                    side = CornerGesture.NONE;
+                }
+                return;
+            }
+            if (menu.isOpened()) return;
             if (action == MotionEvent.ACTION_DOWN) {
                 side = CornerGesture.NONE;
-                pilfered = false;
                 Display display = ((WindowManager) context.getSystemService(
                         Context.WINDOW_SERVICE)).getDefaultDisplay();
-                if (display.getRotation() != android.view.Surface.ROTATION_0) return;
+                if (display == null || display.getRotation() != android.view.Surface.ROTATION_0)
+                    return;
                 android.app.KeyguardManager keyguard = (android.app.KeyguardManager)
                         context.getSystemService(Context.KEYGUARD_SERVICE);
-                if (keyguard != null && keyguard.isKeyguardLocked()) return;
+                if (keyguard != null && keyguard.isDeviceLocked()) return;
                 Point size = new Point();
                 display.getRealSize(size);
                 downX = event.getRawX();
@@ -98,37 +115,18 @@ final class CornerMonitor {
             }
             if (side == CornerGesture.NONE) return;
             if (action == MotionEvent.ACTION_POINTER_DOWN) {
-                if (!pilfered) side = CornerGesture.NONE;
-                return;
-            }
-            if (action == MotionEvent.ACTION_MOVE && !pilfered) {
-                float dx = event.getRawX() - downX;
-                float up = downY - event.getRawY();
-                // Pilfer early enough to win over Launcher quickstep,
-                // but only for directional diagonal swipes.
-                if (CornerGesture.diagonal(side, downX, downY,
-                        event.getRawX(), event.getRawY(),
-                        context.getResources().getDisplayMetrics().density)) {
-                    pilfered = true;
-                    if (monitor != null) monitor.pilferPointers();
-                    menu.show(side);
-                    XposedBridge.log(TAG + " diagonal corner swipe side=" + side
-                            + " dx=" + dx + " up=" + up);
-                }
-            }
-            if (action == MotionEvent.ACTION_MOVE && pilfered) {
-                menu.highlightBySwipe(event.getRawX(), event.getRawY());
-            }
-            if (action == MotionEvent.ACTION_UP) {
-                if (pilfered) menu.chooseBySwipe(event.getRawX(), event.getRawY());
                 side = CornerGesture.NONE;
-            } else if (action == MotionEvent.ACTION_CANCEL) {
+            } else if (action == MotionEvent.ACTION_MOVE
+                    && CornerGesture.earlyCapture(side, downX, downY,
+                    event.getRawX(), event.getRawY(),
+                    context.getResources().getDisplayMetrics().density)) {
+                // Neither the app nor native navigation owns the start region.
+                // Drawing here does not steal the ongoing input stream.
+                menu.showForGesture(side);
+                side = CornerGesture.NONE;
+            } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
                 side = CornerGesture.NONE;
             }
-        }
-
-        private float dp(int count) {
-            return count * context.getResources().getDisplayMetrics().density;
         }
     }
 }

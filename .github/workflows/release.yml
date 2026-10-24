@@ -39,21 +39,24 @@ jobs:
         run: bash build-local.sh
       - name: Verify APK signature
         run: "$ANDROID_HOME/build-tools/36.0.0/apksigner verify app/build/local/mback-debug.apk"
-      - name: Publish v0.5.0 Release
+      - name: Publish v0.6.4 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.5.0
-          name: MBack for ColorOS v0.5.0
+          tag_name: v0.6.4
+          name: MBack for ColorOS v0.6.4
           prerelease: true
           generate_release_notes: true
           files: app/build/local/mback-debug.apk
           fail_on_unmatched_files: true
           body: |
             Experimental Xposed module for OnePlus 15 / ColorOS (Android 17).
-            Scope: com.android.systemui. Requires Vector Framework or compatible LSPosed.
-            New: Flyme-inspired left/right corner diagonal swipe shortcut menu.
-            Supports app picker (up to 6 apps), drag-to-select or tap-to-launch,
-            and native ColorOS floating window mode.
-            Corner gesture is off by default. Portrait supported; some apps restrict floating windows.
+            Scopes: com.android.systemui AND com.android.launcher. Requires Vector Framework or compatible LSPosed.
+            New: Flyme-inspired circular fan UI replaces the previous bottom sheet.
+            Filter native ColorOS back and Quickstep gesture prefixes in two
+            bottom corners, without changing central navigation gestures.
+            Invisible bottom-corner touch shields prevent tap-through.
+            Swipe and release on an app, or tap a shortcut to open a native
+            ColorOS floating window. Up to 6 selectable apps; portrait only.
+            The corner feature remains off by default on a fresh install.
             Retains mBack tap-to-back, visual-center scaling and haptic feedback.
             This is not a pixel-perfect recreation of Flyme. Debug-signed APK.

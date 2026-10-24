@@ -15,6 +15,20 @@ final class CornerGesture {
         return NONE;
     }
 
+    /**
+     * Commit before Android's edge-back or Quickstep touch-slop creates any
+     * visible preview. Unlike grabbing on DOWN, waiting for a tiny inward
+     * diagonal avoids reentrant DOWN/CANCEL on ColorOS' input monitors.
+     */
+    static boolean earlyCapture(int side, float startX, float startY,
+                                float x, float y, float density) {
+        float dx = x - startX;
+        float up = startY - y;
+        if (up < 3f * density || Math.abs(dx) < 3f * density) return false;
+        if (Math.abs(dx) < up * .23f) return false;
+        return side == LEFT ? dx > 0 : side == RIGHT && dx < 0;
+    }
+
     static boolean diagonal(int side, float startX, float startY,
                             float x, float y, float density) {
         float dx = x - startX;

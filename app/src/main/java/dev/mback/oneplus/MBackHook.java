@@ -41,7 +41,12 @@ public final class MBackHook implements IXposedHookLoadPackage {
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam packageParam) {
+        if ("com.android.launcher".equals(packageParam.packageName)) {
+            hookLauncherGesturePipeline(packageParam.classLoader);
+            return;
+        }
         if (!"com.android.systemui".equals(packageParam.packageName)) return;
+        hookSystemUiEdgeGesturePipeline(packageParam.classLoader);
         Class<?> cls = XposedHelpers.findClassIfExists(
                 "com.android.systemui.navigationbar.views.NavigationBarView", packageParam.classLoader);
         if (cls == null) {
@@ -80,8 +85,135 @@ public final class MBackHook implements IXposedHookLoadPackage {
                 if (param.thisObject instanceof ViewGroup) detach((ViewGroup) param.thisObject);
             }
         });
-        XposedBridge.log(TAG + " v0.5-corner-menu registered: " + cls.getName()
+        XposedBridge.log(TAG + " v0.6.4-flyme-corners registered: " + cls.getName()
                 + " dispatch=" + dispatchOwner.getName());
+    }
+
+    /**
+     * Launcher owns the Quickstep "swipe-up" monitor. Its input entry is
+     * OplusBaseTouchInteractionService.K(InputEvent) on PLK110 / ColorOS 17.
+     * Scoped filtering is much safer than racing Launcher's pilferPointers.
+     */
+    private static void hookLauncherGesturePipeline(ClassLoader loader) {
+        Class<?> cls = XposedHelpers.findClassIfExists(
+                "com.android.quickstep.OplusBaseTouchInteractionService", loader);
+        if (cls == null) {
+            XposedBridge.log(TAG + " Launcher Quickstep class not found");
+            return;
+        }
+        XposedBridge.hookAllMethods(cls, "K", new XC_MethodHook() {
+            private final WeakHashMap<Object, Boolean> cornerStreams = new WeakHashMap<>();
+            @Override protected void beforeHookedMethod(MethodHookParam param) {
+                if (param.args == null || param.args.length != 1
+                        || !(param.args[0] instanceof MotionEvent)
+                        || !(param.thisObject instanceof android.content.Context)) return;
+                MotionEvent e = (MotionEvent) param.args[0];
+                Object service = param.thisObject;
+                int action = e.getActionMasked();
+                if (action == MotionEvent.ACTION_DOWN) {
+                    android.content.Context context = (android.content.Context) service;
+                    boolean enabled = Settings.Global.getInt(context.getContentResolver(),
+                            CornerAppMenu.ENABLE_KEY, 0) == 1;
+                    boolean inside = false;
+                    if (enabled) {
+                        android.app.KeyguardManager km = (android.app.KeyguardManager)
+                                context.getSystemService(android.content.Context.KEYGUARD_SERVICE);
+                        if (km != null && km.isDeviceLocked()) enabled = false;
+                    }
+                    if (enabled) {
+                        try {
+                            android.view.Display display = ((android.view.WindowManager)
+                                    context.getSystemService(android.content.Context.WINDOW_SERVICE))
+                                    .getDefaultDisplay();
+                            if (display != null && display.getRotation() == 0) {
+                                android.graphics.Point size = new android.graphics.Point();
+                                display.getRealSize(size);
+                                float density = context.getResources().getDisplayMetrics().density;
+                                inside = CornerGesture.screenOrigin(
+                                        e.getRawX(), e.getRawY(), size.x, size.y, density)
+                                        != CornerGesture.NONE;
+                            }
+                        } catch (Throwable t) {
+                            XposedBridge.log(TAG + " launcher corner check: " + t);
+                        }
+                    }
+                    if (inside) {
+                        cornerStreams.put(service, Boolean.TRUE);
+                        XposedBridge.log(TAG + " Launcher Quickstep BLOCK corner DOWN");
+                        param.setResult(null);
+                        return;
+                    }
+                    cornerStreams.remove(service);
+                } else if (Boolean.TRUE.equals(cornerStreams.get(service))) {
+                    param.setResult(null);
+                    if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL)
+                        cornerStreams.remove(service);
+                }
+            }
+        });
+        XposedBridge.log(TAG + " Launcher Quickstep corner-region filter active");
+    }
+
+    private static void hookSystemUiEdgeGesturePipeline(ClassLoader loader) {
+        final Class<?> edge = XposedHelpers.findClassIfExists(
+                "com.android.systemui.navigationbar.gestural.EdgeBackGestureHandler", loader);
+        if (edge == null) {
+            XposedBridge.log(TAG + " SystemUI EdgeBackGestureHandler unavailable");
+            return;
+        }
+        // PLK110's edge-swipe input receiver calls this lambda before
+        // NavigationBarGestureUpEx or the back-panel animation sees a touch.
+        final String entry = "$r8$lambda$kHZGHLhsJ29ijVg4dOahX71CzUw";
+        XposedBridge.hookAllMethods(edge, entry, new XC_MethodHook() {
+            private final WeakHashMap<Object, Boolean> blocked = new WeakHashMap<>();
+            @Override protected void beforeHookedMethod(MethodHookParam param) {
+                if (param.args == null || param.args.length != 2
+                        || !(param.args[1] instanceof MotionEvent)) return;
+                Object instance = param.args[0];
+                MotionEvent e = (MotionEvent) param.args[1];
+                int action = e.getActionMasked();
+                if (action == MotionEvent.ACTION_DOWN) {
+                    android.content.Context context = null;
+                    try {
+                        Field field = edge.getDeclaredField("mContext");
+                        field.setAccessible(true);
+                        context = (android.content.Context) field.get(instance);
+                    } catch (Throwable ignored) {}
+                    boolean isCorner = context != null
+                            && Settings.Global.getInt(context.getContentResolver(),
+                                    CornerAppMenu.ENABLE_KEY, 0) == 1;
+                    if (isCorner) {
+                        android.app.KeyguardManager km = (android.app.KeyguardManager)
+                                context.getSystemService(android.content.Context.KEYGUARD_SERVICE);
+                        if (km != null && km.isDeviceLocked()) isCorner = false;
+                    }
+                    if (isCorner) {
+                        android.view.WindowManager wm = (android.view.WindowManager)
+                                context.getSystemService(android.content.Context.WINDOW_SERVICE);
+                        android.view.Display display = wm.getDefaultDisplay();
+                        android.graphics.Point size = new android.graphics.Point();
+                        display.getRealSize(size);
+                        isCorner = display.getRotation() == 0
+                                && CornerGesture.screenOrigin(e.getRawX(), e.getRawY(),
+                                size.x, size.y,
+                                context.getResources().getDisplayMetrics().density)
+                                != CornerGesture.NONE;
+                    }
+                    if (isCorner) {
+                        blocked.put(instance, true);
+                        XposedBridge.log(TAG + " SystemUI edge-back BLOCK corner DOWN");
+                        param.setResult(null);
+                    } else {
+                        blocked.remove(instance);
+                    }
+                } else if (Boolean.TRUE.equals(blocked.get(instance))) {
+                    param.setResult(null);
+                    if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL)
+                        blocked.remove(instance);
+                }
+            }
+        });
+        XposedBridge.log(TAG + " SystemUI edge-back corner filter registered");
     }
 
     private static synchronized void attach(ViewGroup root) {

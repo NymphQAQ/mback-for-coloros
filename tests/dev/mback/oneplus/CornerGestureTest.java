@@ -16,6 +16,11 @@ public final class CornerGestureTest {
         check(!CornerGesture.diagonal(CornerGesture.LEFT, 35, 2720, 10, 2620, 3.5f)); count++;
         check(CornerGesture.sanitize("com.example.app") != null); count++;
         check(CornerGesture.sanitize("com.app;rm -rf /") == null); count++;
+        check(CornerGesture.earlyCapture(CornerGesture.LEFT, 35, 2720, 49, 2703, 3.0f)); count++;
+        check(CornerGesture.earlyCapture(CornerGesture.RIGHT, 1230, 2720, 1216, 2703, 3.0f)); count++;
+        check(!CornerGesture.earlyCapture(CornerGesture.LEFT, 35, 2720, 35, 2703, 3.0f)); count++;
+        check(!CornerGesture.earlyCapture(CornerGesture.LEFT, 35, 2720, 49, 2720, 3.0f)); count++;
+        check(!CornerGesture.earlyCapture(CornerGesture.LEFT, 35, 2720, 21, 2703, 3.0f)); count++;
         System.out.println("CornerGestureTest passed (" + count + " assertions)");
     }
     private static void check(boolean ok) { if (!ok) throw new AssertionError(); }
