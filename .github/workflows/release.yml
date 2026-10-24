@@ -1,0 +1,53 @@
+name: Build and publish APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/release.yml"
+      - "app/**"
+      - "stubs/**"
+      - "build-local.sh"
+      - "tests/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Android build tools
+        run: sdkmanager "platforms;android-35" "build-tools;36.0.0"
+      - name: Create debug signing key
+        run: |
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair -v -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+      - name: Build signed APK
+        run: bash build-local.sh
+      - name: Verify APK signature
+        run: "$ANDROID_HOME/build-tools/36.0.0/apksigner verify app/build/local/mback-debug.apk"
+      - name: Publish v0.3.0 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.3.0
+          name: MBack for ColorOS v0.3.0
+          prerelease: true
+          generate_release_notes: true
+          files: app/build/local/mback-debug.apk
+          fail_on_unmatched_files: true
+          body: |
+            Experimental build for OnePlus 15 / ColorOS (Android 17).
+            Xposed (Vector / LSPosed) module. Scope: com.android.systemui.
+            Fixes navigation-handle tap-through and landscape positioning.
+            Debug-signed APK for testing; review the README and backup your setup.
