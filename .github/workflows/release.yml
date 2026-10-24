@@ -39,11 +39,11 @@ jobs:
         run: bash build-local.sh
       - name: Verify APK signature
         run: "$ANDROID_HOME/build-tools/36.0.0/apksigner verify app/build/local/mback-debug.apk"
-      - name: Publish v0.4.1 Release
+      - name: Publish v0.4.2 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.4.1
-          name: MBack for ColorOS v0.4.1
+          tag_name: v0.4.2
+          name: MBack for ColorOS v0.4.2
           prerelease: true
           generate_release_notes: true
           files: app/build/local/mback-debug.apk

@@ -9,16 +9,16 @@ public final class FeedbackConfig {
     public static final int SCALE_MIN = 50;
     public static final int SCALE_MAX = 150;
     public static final int SCALE_STEP = 5;
-    public static final int DEFAULT_SCALE = 75;
+    public static final int DEFAULT_SCALE = 110;
 
     public static final int DURATION_MIN = 80;
     public static final int DURATION_MAX = 500;
     public static final int DURATION_STEP = 20;
-    public static final int DEFAULT_DURATION = 220;
+    public static final int DEFAULT_DURATION = 240;
 
     public static final int VIBRATION_MIN = 0;
     public static final int VIBRATION_MAX = 10;
-    public static final int DEFAULT_VIBRATION = 5;
+    public static final int DEFAULT_VIBRATION = 3;
 
     public static int scale(int raw) {
         return snap(raw, SCALE_MIN, SCALE_MAX, SCALE_STEP);

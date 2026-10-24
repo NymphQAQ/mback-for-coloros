@@ -1,6 +1,6 @@
 # MBack · Xposed (OnePlus 15 / ColorOS)
 
-在 ColorOS 手势导航的小白条上模拟魅族 mBack：**轻点返回，上滑仍保留系统原有导航功能**。v0.4.0 新增小白条缩放动画及可调震动，v0.4.1 修复缩放轴心偏下问题。
+在 ColorOS 手势导航的小白条上模拟魅族 mBack：**轻点返回，上滑仍保留系统原有导航功能**。v0.4.0 新增小白条缩放动画及可调震动，v0.4.1 修复缩放轴心偏下问题。v0.4.2 将一加 15 当前设置（110% / 240ms / 3 级）作为新安装的默认反馈参数。
 
 已在一加 15（PLK110）、Android 17 / API 37、Vector Framework 2.2 / Xposed API 102 上测试。
 
@@ -41,6 +41,12 @@ stubs/ 下只有编译期 legacy Xposed API 的声明，脚本不会把这些 st
 adb shell su -c '/data/adb/lspd/cli modules enable dev.mback.oneplus'
 adb shell su -c '/data/adb/lspd/cli scope add dev.mback.oneplus com.android.systemui/0'
 ```
+
+## v0.4.2 默认参数（2026-10-24）
+
+- 根据手机实际 `Settings.Global` 读取结果，将新安装的缺省反馈设置改为：缩放比例 **110%**、动画时长 **240ms**、震动强度 **3 级**。
+- 已有配置优先级高于代码默认值，更新 APK 不会覆盖用户已保存的数值。
+- 轻触返回开关仍需用户显式启用；通知默认关闭，与设备当前状态一致。
 
 ## v0.4.1 缩放中心修复（2026-10-24）
 

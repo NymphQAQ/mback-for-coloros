@@ -80,7 +80,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                 if (param.thisObject instanceof ViewGroup) detach((ViewGroup) param.thisObject);
             }
         });
-        XposedBridge.log(TAG + " v0.4.1-visual-pivot registered: " + cls.getName()
+        XposedBridge.log(TAG + " v0.4.2-defaults registered: " + cls.getName()
                 + " dispatch=" + dispatchOwner.getName());
     }
 
