@@ -1,6 +1,6 @@
 # MBack · Xposed (OnePlus 15 / ColorOS)
 
-在 ColorOS 手势导航的小白条上模拟魅族 mBack：**轻点返回，上滑仍保留系统原有导航功能**。v0.4.0 新增小白条缩放动画及可调震动，v0.4.1 修复缩放轴心偏下问题。v0.4.2 将一加 15 当前设置（110% / 240ms / 3 级）作为新安装的默认反馈参数。
+在 ColorOS 手势导航的小白条上模拟魅族 mBack：**轻点返回，上滑仍保留系统原有导航功能**。v0.4 加入缩放与可调震动，v0.5 加入 Flyme 风格双底角小窗菜单。
 
 已在一加 15（PLK110）、Android 17 / API 37、Vector Framework 2.2 / Xposed API 102 上测试。
 
@@ -41,6 +41,16 @@ stubs/ 下只有编译期 legacy Xposed API 的声明，脚本不会把这些 st
 adb shell su -c '/data/adb/lspd/cli modules enable dev.mback.oneplus'
 adb shell su -c '/data/adb/lspd/cli scope add dev.mback.oneplus com.android.systemui/0'
 ```
+
+## v0.5.0：左右下角斜滑小窗菜单
+
+- 在 MBack 中开启“启用左右下角斜滑菜单（竖屏）”；**默认关闭**，不影响原有 mBack 单击返回。应用选择界面支持自定义最多 6 个已安装应用。
+- 从竖屏左下角或右下角向中间斜向上滑。SystemUI 独立的 `monitorGestureInput` 监听器只在确认斜滑后 `pilferPointers`，避免 Launcher 的 swipe-up 抢走该手势；普通上滑交给系统。
+- 菜单采用半透明、浅弧形排列，可滑到应用图标后松手打开，也可松手保留菜单再点击图标；点右上角 × 关闭。
+- 小窗由 ColorOS 专用参数 `android.activity.windowingMode=100` 原生启动。标准 Android 自由窗口 mode 5 在本机被忽略。
+- 真机测试：左下角滑选计算器、右下角滑选文件管理器，均显示为 ColorOS 原生浮动小窗，原 App 留在下层。
+- 开关和应用列表分别写入 `Settings.Global.mback_corner_menu_enabled`、`mback_corner_menu_apps`；关闭开关停止独立输入监控。紧急关闭：`adb shell su -c 'settings put global mback_corner_menu_enabled 0'`。
+- **不宣称与 Flyme 像素级或系统行为完全一致**：小窗之后由 ColorOS 管理，菜单最多 6 个应用，目前仅竖屏可用；部分游戏/银行应用可能禁止小窗。其他 ROM 版本未测试。
 
 ## v0.4.2 默认参数（2026-10-24）
 

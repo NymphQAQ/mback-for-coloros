@@ -80,7 +80,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                 if (param.thisObject instanceof ViewGroup) detach((ViewGroup) param.thisObject);
             }
         });
-        XposedBridge.log(TAG + " v0.4.2-defaults registered: " + cls.getName()
+        XposedBridge.log(TAG + " v0.5-corner-menu registered: " + cls.getName()
                 + " dispatch=" + dispatchOwner.getName());
     }
 
@@ -108,6 +108,10 @@ public final class MBackHook implements IXposedHookLoadPackage {
         private final ContentObserver settingObserver;
         private Object insetsListener;
         private boolean active;
+        private boolean cornerEnabled;
+        private CornerAppMenu cornerMenu;
+        private CornerMonitor cornerMonitor;
+        private int previewCount;
         private int scalePercent = FeedbackConfig.DEFAULT_SCALE;
         private int scaleDuration = FeedbackConfig.DEFAULT_DURATION;
         private int vibrationLevel = FeedbackConfig.DEFAULT_VIBRATION;
@@ -130,6 +134,18 @@ public final class MBackHook implements IXposedHookLoadPackage {
             settingObserver = new ContentObserver(handler) {
                 @Override public void onChange(boolean selfChange) {
                     active = readEnabled();
+                    cornerEnabled = readCornerEnabled();
+                    if (cornerMonitor != null) {
+                        if (cornerEnabled) cornerMonitor.start();
+                        else cornerMonitor.stop();
+                    }
+                    int newPreview = Settings.Global.getInt(root.getContext().getContentResolver(),
+                            CornerAppMenu.PREVIEW_KEY, 0);
+                    if (newPreview != previewCount) {
+                        previewCount = newPreview;
+                        if (cornerMenu != null) cornerMenu.show(CornerGesture.RIGHT);
+                    }
+                    if (!cornerEnabled && cornerMenu != null) cornerMenu.hide();
                     loadFeedbackSettings();
                     if (!active) {
                         pressed = false;
@@ -143,6 +159,12 @@ public final class MBackHook implements IXposedHookLoadPackage {
 
         void attach() throws Exception {
             active = readEnabled();
+            cornerEnabled = readCornerEnabled();
+            cornerMenu = new CornerAppMenu(root.getContext());
+            cornerMonitor = new CornerMonitor(root.getContext(), cornerMenu);
+            if (cornerEnabled) cornerMonitor.start();
+            previewCount = Settings.Global.getInt(root.getContext().getContentResolver(),
+                    CornerAppMenu.PREVIEW_KEY, 0);
             loadFeedbackSettings();
             root.addView(cover, new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -154,6 +176,12 @@ public final class MBackHook implements IXposedHookLoadPackage {
                     Settings.Global.getUriFor(FeedbackConfig.DURATION_KEY), false, settingObserver);
             root.getContext().getContentResolver().registerContentObserver(
                     Settings.Global.getUriFor(FeedbackConfig.VIBRATION_KEY), false, settingObserver);
+            root.getContext().getContentResolver().registerContentObserver(
+                    Settings.Global.getUriFor(CornerAppMenu.ENABLE_KEY), false, settingObserver);
+            root.getContext().getContentResolver().registerContentObserver(
+                    Settings.Global.getUriFor(CornerAppMenu.APPS_KEY), false, settingObserver);
+            root.getContext().getContentResolver().registerContentObserver(
+                    Settings.Global.getUriFor(CornerAppMenu.PREVIEW_KEY), false, settingObserver);
             Class<?> listenerClass = Class.forName("android.view.ViewTreeObserver$OnComputeInternalInsetsListener");
             insetsListener = Proxy.newProxyInstance(listenerClass.getClassLoader(),
                     new Class<?>[]{listenerClass}, (proxy, method, args) -> {
@@ -170,6 +198,8 @@ public final class MBackHook implements IXposedHookLoadPackage {
         }
 
         void detach() {
+            if (cornerMonitor != null) cornerMonitor.stop();
+            if (cornerMenu != null) cornerMenu.hide();
             restoreHandle();
             root.getContext().getContentResolver().unregisterContentObserver(settingObserver);
             if (insetsListener != null) {
@@ -186,6 +216,11 @@ public final class MBackHook implements IXposedHookLoadPackage {
 
         private boolean readEnabled() {
             return Settings.Global.getInt(root.getContext().getContentResolver(), SETTING, 0) == 1;
+        }
+
+        private boolean readCornerEnabled() {
+            return Settings.Global.getInt(root.getContext().getContentResolver(),
+                    CornerAppMenu.ENABLE_KEY, 0) == 1;
         }
 
         private void loadFeedbackSettings() {
@@ -300,17 +335,17 @@ public final class MBackHook implements IXposedHookLoadPackage {
 
         private void updateInsets(Object info) {
             try {
-                if (!active || !root.isShown()) {
+                if (!root.isShown() || !active) {
                     hitRect.setEmpty();
                     return;
                 }
                 Rect hit = calculateHitRect();
                 hitRect.set(hit);
-                if (hit.isEmpty()) return;
                 Field regionField = info.getClass().getField("touchableRegion");
                 Region region = (Region) regionField.get(info);
-                // Preserve ColorOS' existing touchable targets; only add the handle region.
-                region.op(hit, Region.Op.UNION);
+                if (!hit.isEmpty()) region.op(hit, Region.Op.UNION);
+                // Corner gestures use a separate SPY input monitor, so extending
+                // the navigation touchable region would just steal corner taps.
                 Method setter = info.getClass().getMethod("setTouchableInsets", int.class);
                 setter.invoke(info, 3); // TOUCHABLE_INSETS_REGION
             } catch (Exception e) {
@@ -366,8 +401,6 @@ public final class MBackHook implements IXposedHookLoadPackage {
         boolean dispatch(MotionEvent event) {
             if (!active) return false;
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                // Use the SAME region the input dispatcher uses. Recalculating a
-                // narrower handle rect here previously discarded valid downs.
                 if (!hitRect.contains((int) event.getX(), (int) event.getY())) return false;
             } else if (!pressed) {
                 return false;

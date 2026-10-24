@@ -1,6 +1,16 @@
 package dev.mback.oneplus;
 
 import android.Manifest;
+import android.app.AlertDialog;
+import android.content.pm.ResolveInfo;
+import android.widget.Toast;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.TreeMap;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -26,6 +36,7 @@ public final class MainActivity extends Activity {
     private TextView status;
     private Switch enabledSwitch;
     private Switch notificationSwitch;
+    private Switch cornerSwitch;
     private SeekBar scaleSlider;
     private SeekBar durationSlider;
     private SeekBar vibrationSlider;
@@ -77,6 +88,31 @@ public final class MainActivity extends Activity {
         preview.setText("试听当前震动");
         layout.addView(preview);
         preview.setOnClickListener(v -> previewVibration());
+
+        layout.addView(section("Flyme 风格边角小窗"));
+        cornerSwitch = new Switch(this);
+        cornerSwitch.setText("启用左右下角斜滑菜单（竖屏）");
+        layout.addView(cornerSwitch);
+        cornerSwitch.setOnCheckedChangeListener((button, checked) -> {
+            if (!switching) writeGlobal(CornerAppMenu.ENABLE_KEY,
+                    checked ? 1 : 0, "小窗角落手势");
+        });
+        Button chooseApps = new Button(this);
+        chooseApps.setText("选择快捷栏应用（最多 6 个）");
+        layout.addView(chooseApps);
+        chooseApps.setOnClickListener(v -> chooseCornerApps());
+        Button previewMenu = new Button(this);
+        previewMenu.setText("预览小窗快捷栏");
+        layout.addView(previewMenu);
+        previewMenu.setOnClickListener(v -> {
+            if (readGlobal(CornerAppMenu.ENABLE_KEY, 0) == 0) {
+                status.setText("请先开启左右下角斜滑菜单");
+                return;
+            }
+            writeGlobal(CornerAppMenu.PREVIEW_KEY,
+                    readGlobal(CornerAppMenu.PREVIEW_KEY, 0) + 1, "小窗菜单预览");
+        });
+        layout.addView(text("从左下角或右下角沿斜线向内上滑约 60dp，松手显示快捷栏，点击应用以 ColorOS 原生小窗方式启动。此功能默认关闭，不影响小白条轻触返回。", 13));
 
         layout.addView(section("其他"));
         notificationSwitch = new Switch(this);
@@ -138,6 +174,80 @@ public final class MainActivity extends Activity {
         return slider;
     }
 
+    private void chooseCornerApps() {
+        new Thread(() -> {
+            PackageManager pm = getPackageManager();
+            Intent query = new Intent(Intent.ACTION_MAIN);
+            query.addCategory(Intent.CATEGORY_LAUNCHER);
+            java.util.List<ResolveInfo> resolved = pm.queryIntentActivities(query, 0);
+            TreeMap<String, String> all = new TreeMap<>();
+            for (ResolveInfo info : resolved) {
+                if (info.activityInfo == null || info.activityInfo.packageName == null) continue;
+                String pkg = info.activityInfo.packageName;
+                try {
+                    String label = info.loadLabel(pm).toString();
+                    all.putIfAbsent(pkg, label);
+                } catch (Throwable ignored) { all.putIfAbsent(pkg, pkg); }
+            }
+            ArrayList<String> packages = new ArrayList<>(all.keySet());
+            Collections.sort(packages, (a, b) -> {
+                int byLabel = java.text.Collator.getInstance().compare(all.get(a), all.get(b));
+                return byLabel != 0 ? byLabel : a.compareTo(b);
+            });
+            String saved = Settings.Global.getString(getContentResolver(), CornerAppMenu.APPS_KEY);
+            if (saved == null) saved = CornerAppMenu.DEFAULT_APPS;
+            HashSet<String> selection = new HashSet<>();
+            for (String s : saved.split(",")) selection.add(s.trim());
+            String[] labels = new String[packages.size()];
+            boolean[] checked = new boolean[packages.size()];
+            for (int i = 0; i < packages.size(); i++) {
+                labels[i] = all.get(packages.get(i));
+                checked[i] = selection.contains(packages.get(i));
+            }
+            runOnUiThread(() -> new AlertDialog.Builder(this)
+                    .setTitle("选择 6 个小窗应用")
+                    .setMultiChoiceItems(labels, checked, (dialog, index, selected) -> {
+                        checked[index] = selected;
+                        int count = 0;
+                        for (boolean pick : checked) if (pick) count++;
+                        if (count > 6) {
+                            checked[index] = false;
+                            ((AlertDialog) dialog).getListView().setItemChecked(index, false);
+                            Toast.makeText(this, "最多添加 6 个应用", Toast.LENGTH_SHORT).show();
+                        }
+                    })
+                    .setNegativeButton("取消", null)
+                    .setPositiveButton("保存", (dialog, which) -> {
+                        StringBuilder csv = new StringBuilder();
+                        for (int i = 0; i < packages.size(); i++) {
+                            if (!checked[i]) continue;
+                            String pkg = CornerGesture.sanitize(packages.get(i));
+                            if (pkg == null) continue;
+                            if (csv.length() > 0) csv.append(',');
+                            csv.append(pkg);
+                        }
+                        writeAppList(csv.length() == 0 ? "none" : csv.toString());
+                    })
+                    .show());
+        }, "mback-app-picker").start();
+    }
+
+    private void writeAppList(String safeList) {
+        if (!safeList.matches("[A-Za-z0-9_.,]+")) return;
+        status.setText("正在保存快捷应用…");
+        new Thread(() -> {
+            try {
+                Process process = new ProcessBuilder("su", "-c",
+                        "settings put global " + CornerAppMenu.APPS_KEY + " " + safeList).start();
+                int exit = process.waitFor();
+                runOnUiThread(() -> status.setText(exit == 0
+                        ? "快捷应用已保存，立即生效" : "快捷应用保存失败"));
+            } catch (Exception e) {
+                runOnUiThread(() -> status.setText("快捷应用保存失败：" + e.getMessage()));
+            }
+        }, "mback-save-apps").start();
+    }
+
     private int readGlobal(String key, int fallback) {
         return Settings.Global.getInt(getContentResolver(), key, fallback);
     }
@@ -146,6 +256,9 @@ public final class MainActivity extends Activity {
         boolean enabled = readGlobal(MBackHook.SETTING, 0) == 1;
         switching = true;
         enabledSwitch.setChecked(enabled);
+        if (cornerSwitch != null) {
+            cornerSwitch.setChecked(readGlobal(CornerAppMenu.ENABLE_KEY, 0) == 1);
+        }
         switching = false;
         status.setText(enabled ? "轻触返回已开启 · 调节设置后立即生效"
                 : "当前已关闭轻触返回");
