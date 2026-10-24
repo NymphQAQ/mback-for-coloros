@@ -53,7 +53,7 @@ final class CornerTouchShield {
     };
     private final Runnable awaitUnlock = new Runnable() {
         @Override public void run() {
-            if (!started || (left != null && right != null)) return;
+            if (!started || ShadeVisibility.isExpanded() || (left != null && right != null)) return;
             android.os.PowerManager power = (android.os.PowerManager)
                     context.getSystemService(Context.POWER_SERVICE);
             if (power != null && !power.isInteractive()) return;
@@ -62,6 +62,10 @@ final class CornerTouchShield {
                 handler.postDelayed(this, 2000);
             }
         }
+    };
+    private final Runnable onShadeChange = () -> {
+        if (ShadeVisibility.isExpanded()) clear();
+        else update();
     };
     private View left, right;
     private boolean started;
@@ -76,6 +80,7 @@ final class CornerTouchShield {
     void start() {
         if (started) return;
         started = true;
+        ShadeVisibility.addListener(onShadeChange);
         if (displays != null) displays.registerDisplayListener(rotationListener, handler);
         IntentFilter screenEvents = new IntentFilter();
         screenEvents.addAction(Intent.ACTION_SCREEN_OFF);
@@ -89,6 +94,7 @@ final class CornerTouchShield {
     void stop() {
         if (!started) return;
         started = false;
+        ShadeVisibility.removeListener(onShadeChange);
         if (displays != null) displays.unregisterDisplayListener(rotationListener);
         try { context.unregisterReceiver(screenReceiver); } catch (Exception ignored) {}
         handler.removeCallbacks(awaitUnlock);
@@ -99,7 +105,11 @@ final class CornerTouchShield {
         Display display = wm.getDefaultDisplay();
         if (display == null) return;
         int rotation = display.getRotation();
-        if (rotation == lastRotation && (left != null || rotation != 0)) return;
+        if (ShadeVisibility.isExpanded()) {
+            clear();
+            return;
+        }
+        if (rotation == lastRotation && left != null && right != null) return;
         lastRotation = rotation;
         clear();
         if (!started || rotation != 0) {

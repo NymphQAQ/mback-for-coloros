@@ -30,7 +30,7 @@ public final class MainActivity extends Activity {
     private Switch originalIconSwitch;
     private SeekBar arcRadiusSlider;
     private SeekBar arcIconSlider;
-    private SeekBar arcSpacingSlider;
+    private SeekBar hoverVibrationSlider;
     private SeekBar scaleSlider;
     private SeekBar durationSlider;
     private SeekBar vibrationSlider;
@@ -108,11 +108,10 @@ public final class MainActivity extends Activity {
                 ArcConfig.ICON_MAX, ArcConfig.ICON_STEP,
                 ArcConfig.DEFAULT_ICON, " dp",
                 value -> {});
-        arcSpacingSlider = addSlider(layout, "图标间距", "沿圆弧的相邻图标边缘距离；空间不足时自动收紧",
-                ArcConfig.SPACING_KEY, ArcConfig.SPACING_MIN,
-                ArcConfig.SPACING_MAX, ArcConfig.SPACING_STEP,
-                ArcConfig.DEFAULT_SPACING, " dp",
-                value -> {});
+        layout.addView(text("图标间距会根据圆弧半径、图标尺寸与应用数量自动计算，无需手动调整。", 12));
+        hoverVibrationSlider = addSlider(layout, "滑入图标时震动", "0 关闭，1～10 级；每次进入不同图标时反馈一次",
+                ArcConfig.HOVER_VIBRATION_KEY, 0, 10, 1,
+                ArcConfig.DEFAULT_HOVER_VIBRATION, " 级", value -> {});
         originalIconSwitch = new Switch(this);
         originalIconSwitch.setText("使用原始图标形状（关闭则裁剪为圆形）");
         layout.addView(originalIconSwitch);
@@ -316,10 +315,9 @@ public final class MainActivity extends Activity {
                     ArcConfig.ICON_SIZE_KEY, ArcConfig.DEFAULT_ICON)) - ArcConfig.ICON_MIN)
                     / ArcConfig.ICON_STEP);
         }
-        if (arcSpacingSlider != null) {
-            arcSpacingSlider.setProgress((ArcConfig.spacing(readGlobal(
-                    ArcConfig.SPACING_KEY, ArcConfig.DEFAULT_SPACING)) - ArcConfig.SPACING_MIN)
-                    / ArcConfig.SPACING_STEP);
+        if (hoverVibrationSlider != null) {
+            hoverVibrationSlider.setProgress(ArcConfig.hoverVibration(readGlobal(
+                    ArcConfig.HOVER_VIBRATION_KEY, ArcConfig.DEFAULT_HOVER_VIBRATION)));
         }
         StatusNotification.sync(this);
     }

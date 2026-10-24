@@ -81,6 +81,11 @@ final class CornerMonitor {
         }
 
         private void onTouch(MotionEvent event) {
+            if (ShadeVisibility.isExpanded()) {
+                side = CornerGesture.NONE;
+                if (menu.isOpened()) menu.hide();
+                return;
+            }
             int action = event.getActionMasked();
             if (menu.isGestureActive()) {
                 if (action == MotionEvent.ACTION_MOVE) {

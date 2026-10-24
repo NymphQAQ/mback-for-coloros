@@ -1,6 +1,6 @@
 # MBack · Xposed (OnePlus 15 / ColorOS)
 
-在 ColorOS 手势导航的小白条上模拟魅族 mBack：**轻点返回，上滑仍保留系统原有导航功能**。v0.4 加入缩放与可调震动，v0.5 加入 Flyme 风格双底角小窗菜单，v0.6.5 将菜单改成紧凑斜列并优化动画性能，v0.6.6 将斜列扩大到 7 个位置、改为松手即退，v0.6.7 将直线改成真正的可调圆弧，并加入可调图标大小、间距和形状。
+在 ColorOS 手势导航的小白条上模拟魅族 mBack：**轻点返回，上滑仍保留系统原有导航功能**。v0.4 加入缩放与可调震动，v0.5 加入 Flyme 风格双底角小窗菜单，v0.6.5 将菜单改成紧凑斜列并优化动画性能，v0.6.6 将斜列扩大到 7 个位置、改为松手即退，v0.6.7 将直线改成真正的可调圆弧并加入可调图标尺寸和形状，v0.6.8 将图标间距自动化，并修复通知栏手势冲突。
 
 已在一加 15（PLK110）、Android 17 / API 37、Vector Framework 2.2 / Xposed API 102 上测试。
 
@@ -42,6 +42,16 @@ adb shell su -c '/data/adb/lspd/cli modules enable dev.mback.oneplus'
 adb shell su -c '/data/adb/lspd/cli scope add dev.mback.oneplus com.android.systemui/0'
 adb shell su -c '/data/adb/lspd/cli scope add dev.mback.oneplus com.android.launcher/0'
 ```
+
+## v0.6.8（仅源码同步）：自动图标间距、滑选震动、搜索及通知栏手势修复
+
+- **自适应圆弧间距**：已从设置页删除手动调节滑块，运行时使用圆弧半径、当前应用数（最多 6 个+「更多」）、图标尺寸及屏幕安全角度自动计算图标间距，保证左右对称，有限空间下尽量避免裁剪和重叠。旧 `mback_arc_spacing_dp` 配置不再读取。
+- **滑入图标震动 0～10 级**：新增独立的「滑入图标时震动」滑块，默认 3 级，0 关闭；只有手指**进入一个新的应用图标或「更多」图标**时才震动，在同一个图标上反复 MOVE 不重复震动，最短间隔 45ms。系统能控制振幅时，10 个等级对应独立振幅；不会修改已有小白条点击返回震动等级。配置键：`mback_corner_hover_vibration`。
+- **更多应用管理**：已添加的应用图标右上角显示红底白色「−」，未添加显示绿底白色「+」，点击后更新已添加列表及按钮。新增支持应用名称、包名的搜索输入框，可按文字即时筛选全部应用，仍限制最多 6 个快捷应用。
+- **ColorOS 通知栏上滑及左右横滑修复**：Xposed 挂钩 `NotificationPanelViewController.setExpandedHeightInternal` 的展开进度，通知面板展开时暂停底角小窗检测、移除两侧透明触摸保护窗口并跳过 SystemUI 边缘返回拦截；通过 `Settings.Global.mback_notification_shade_open` 让 Launcher 的 Quickstep 入口过滤器也让出原生手势。通知面板收起时恢复底角保护，不影响普通小窗。
+- **真机通知栏回归**：一加 15 上命令展开通知栏后确认为 `mback_notification_shade_open=1`、左右触摸保护层已移除；上滑后通知栏正常收起，标记复原为 0，触摸保护层重新建立。已向通知页发送横滑事件且未被 MBack 遮罩拦截；**是否发生了 ColorOS 的通知/快捷设置页面切换尚未独立确认**。
+- **验证**：本地构建与 JVM 几何/手势测试通过，应用管理的红绿按钮及搜索框有真机 UI 检查；搜索文字输入的完整筛选结果被系统生物识别弹窗打断，未进行虚假断言。
+- **发布状态**：延续源码预览约定，GitHub Actions 仅编译和测试，不创建 Release、不公开上传 APK。已发布的 v0.6.4 保留。
 
 ## v0.6.7（源码预览版，不发布 APK）：真正圆弧与四项可调设置
 

@@ -13,6 +13,10 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.GridLayout;
+import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -38,6 +42,7 @@ public final class MoreAppsActivity extends Activity {
     private LinearLayout list;
     private TextView title;
     private TextView action;
+    private EditText search;
     private boolean busy;
 
     private static final class Entry {
@@ -75,6 +80,27 @@ public final class MoreAppsActivity extends Activity {
         top.addView(action);
         action.setOnClickListener(v -> saveAndClose());
         panel.addView(top);
+
+        search = new EditText(this);
+        search.setSingleLine(true);
+        search.setTextSize(14);
+        search.setHint("搜索应用名称或包名");
+        search.setCompoundDrawablePadding(dp(8));
+        search.setPadding(dp(12), dp(6), dp(12), dp(6));
+        GradientDrawable searchBackground = new GradientDrawable();
+        searchBackground.setColor(0xFFF2F5F8);
+        searchBackground.setCornerRadius(dp(13));
+        search.setBackground(searchBackground);
+        LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(-1, dp(42));
+        searchParams.setMargins(0, dp(5), 0, dp(9));
+        panel.addView(search, searchParams);
+        search.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                if (!installed.isEmpty()) render();
+            }
+            @Override public void afterTextChanged(Editable value) {}
+        });
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
@@ -149,11 +175,16 @@ public final class MoreAppsActivity extends Activity {
         } else {
             addGrid(added, true);
         }
-        list.addView(section("全部应用"));
+        String query = search == null ? "" : search.getText().toString()
+                .trim().toLowerCase(Locale.ROOT);
+        list.addView(section(query.isEmpty() ? "全部应用" : "搜索结果"));
         String currentLetter = "";
         ArrayList<Entry> group = new ArrayList<>();
         for (Entry e : installed) {
-            String letter = Character.toString(Character.toUpperCase(e.label.charAt(0)));
+            if (!query.isEmpty() && !e.label.toLowerCase(Locale.ROOT).contains(query)
+                    && !e.pkg.toLowerCase(Locale.ROOT).contains(query)) continue;
+            String letter = e.label.isEmpty() ? "#" :
+                    Character.toString(Character.toUpperCase(e.label.charAt(0)));
             if (!letter.matches("[A-Z]")) letter = "#";
             if (!currentLetter.equals(letter) && !group.isEmpty()) {
                 addGroup(currentLetter, group);
@@ -163,6 +194,9 @@ public final class MoreAppsActivity extends Activity {
             group.add(e);
         }
         if (!group.isEmpty()) addGroup(currentLetter, group);
+        if (!query.isEmpty() && group.isEmpty() && currentLetter.isEmpty()) {
+            list.addView(text("未找到匹配应用", 13, 0xFF8D959A));
+        }
     }
 
     private void addGroup(String letter, ArrayList<Entry> entries) {
@@ -180,18 +214,33 @@ public final class MoreAppsActivity extends Activity {
             item.setGravity(Gravity.CENTER);
             item.setPadding(dp(2), dp(10), dp(2), dp(9));
 
+            FrameLayout iconHolder = new FrameLayout(this);
             ImageView icon = new ImageView(this);
             try { icon.setImageDrawable(getPackageManager().getApplicationIcon(e.pkg)); }
             catch (Exception ignored) { icon.setImageResource(android.R.drawable.sym_def_app_icon); }
             icon.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
-            item.addView(icon, new LinearLayout.LayoutParams(dp(37), dp(37)));
+            FrameLayout.LayoutParams iconLp = new FrameLayout.LayoutParams(dp(37), dp(37),
+                    Gravity.CENTER);
+            iconHolder.addView(icon, iconLp);
+            boolean picked = selected.contains(e.pkg);
+            TextView badge = text(picked ? "−" : "+", 13, Color.WHITE);
+            badge.setGravity(Gravity.CENTER);
+            badge.setTypeface(null, android.graphics.Typeface.BOLD);
+            GradientDrawable badgeBg = new GradientDrawable();
+            badgeBg.setColor(picked ? 0xFFE94C55 : 0xFF32B95C);
+            badgeBg.setShape(GradientDrawable.OVAL);
+            badge.setBackground(badgeBg);
+            FrameLayout.LayoutParams badgeLp = new FrameLayout.LayoutParams(
+                    dp(18), dp(18), Gravity.TOP | Gravity.RIGHT);
+            badgeLp.setMargins(0, 0, dp(1), 0);
+            iconHolder.addView(badge, badgeLp);
+            item.addView(iconHolder, new LinearLayout.LayoutParams(dp(49), dp(45)));
             TextView name = text(e.label, 10, 0xFF3E4750);
             name.setGravity(Gravity.CENTER);
             name.setSingleLine(true);
             name.setEllipsize(android.text.TextUtils.TruncateAt.END);
             item.addView(name, new LinearLayout.LayoutParams(-1, dp(24)));
 
-            boolean picked = selected.contains(e.pkg);
             if (picked && !added) {
                 name.setTextColor(0xFF238CFA);
                 item.setAlpha(.8f);

@@ -11,6 +11,9 @@ import android.graphics.Paint;
 import android.graphics.BitmapShader;
 import android.graphics.PixelFormat;
 import android.graphics.Shader;
+import android.os.SystemClock;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.graphics.drawable.Drawable;
 import android.os.Handler;
 import android.os.Looper;
@@ -58,11 +61,6 @@ final class CornerAppMenu {
                 ArcConfig.ICON_SIZE_KEY, ArcConfig.DEFAULT_ICON));
     }
 
-    private int spacingDp() {
-        return ArcConfig.spacing(Settings.Global.getInt(context.getContentResolver(),
-                ArcConfig.SPACING_KEY, ArcConfig.DEFAULT_SPACING));
-    }
-
     private boolean useOriginalIcons() {
         return Settings.Global.getInt(context.getContentResolver(),
                 ArcConfig.ORIGINAL_ICON_KEY, 0) == 1;
@@ -104,9 +102,11 @@ final class CornerAppMenu {
         try {
             int radius = radiusPercent();
             int icon = iconSizeDp();
-            int spacing = spacingDp();
+            int vibration = ArcConfig.hoverVibration(Settings.Global.getInt(
+                    context.getContentResolver(), ArcConfig.HOVER_VIBRATION_KEY,
+                    ArcConfig.DEFAULT_HOVER_VIBRATION));
             RowView next = new RowView(context, side, cachedApps,
-                    radius, icon, spacing, useOriginalIcons());
+                    radius, icon, useOriginalIcons(), vibration);
             android.graphics.Point size = new android.graphics.Point();
             windowManager.getDefaultDisplay().getRealSize(size);
             // Make the overlay tall enough for the largest allowed circular arc.
@@ -129,9 +129,9 @@ final class CornerAppMenu {
             windowManager.addView(next, lp);
             view = next;
             next.enter();
-            XposedBridge.log(TAG + " circular arc shown side=" + side
-                    + " radius=" + radius + "% icon=" + icon + "dp gap=" + spacing
-                    + "dp original=" + useOriginalIcons() + " apps=" + cachedApps.size());
+            XposedBridge.log(TAG + " adaptive arc shown side=" + side
+                    + " radius=" + radius + "% icon=" + icon + "dp hover=" + vibration
+                    + " original=" + useOriginalIcons() + " apps=" + cachedApps.size());
         } catch (Throwable error) {
             XposedBridge.log(TAG + " show failed: " + error);
             hide();
@@ -255,8 +255,10 @@ final class CornerAppMenu {
         private final float density;
         private final int radiusPercent;
         private final int iconSizeDp;
-        private final int spacingDp;
         private final boolean originalIcons;
+        private final int hoverVibration;
+        private final Vibrator vibrator;
+        private long lastHapticAt;
         private final int[] windowPosition = new int[2];
         private final float[] arcX = new float[FlymeArcGeometry.MAX_POSITIONS];
         private final float[] arcY = new float[FlymeArcGeometry.MAX_POSITIONS];
@@ -266,15 +268,16 @@ final class CornerAppMenu {
         private int hovered = -1;
 
         RowView(Context ctx, int side, List<AppItem> apps, int radius,
-                int icon, int spacing, boolean original) {
+                int icon, boolean original, int vibration) {
             super(ctx);
             this.side = side;
             this.apps = apps;
             density = ctx.getResources().getDisplayMetrics().density;
             radiusPercent = radius;
             iconSizeDp = icon;
-            spacingDp = spacing;
             originalIcons = original;
+            hoverVibration = vibration;
+            vibrator = (Vibrator) ctx.getSystemService(Context.VIBRATOR_SERVICE);
             setContentDescription("Flyme 可调圆弧小窗菜单");
         }
 
@@ -303,9 +306,9 @@ final class CornerAppMenu {
             int count = FlymeArcGeometry.visiblePositions(apps.size());
             for (int pos = 0; pos < count; pos++) {
                 arcX[pos] = FlymeArcGeometry.x(side, pos, width, density,
-                        radiusPercent, iconSizeDp, spacingDp, count);
+                        radiusPercent, iconSizeDp, count);
                 arcY[pos] = FlymeArcGeometry.y(pos, width, height, density,
-                        radiusPercent, iconSizeDp, spacingDp, count);
+                        radiusPercent, iconSizeDp, count);
             }
         }
 
@@ -329,9 +332,24 @@ final class CornerAppMenu {
 
         void select(float rawX, float rawY) {
             int current = hit(rawX, rawY);
-            if (current != hovered) {
-                hovered = current;
-                postInvalidateOnAnimation();
+            if (current == hovered) return;
+            hovered = current;
+            postInvalidateOnAnimation();
+            // One light tick when entering a new icon. No vibration for empty
+            // space or for repeated MOVE events while staying on the same icon.
+            long now = SystemClock.uptimeMillis();
+            if (current >= 0 && hoverVibration > 0 && now - lastHapticAt >= 45
+                    && vibrator != null && vibrator.hasVibrator()) {
+                lastHapticAt = now;
+                try {
+                    vibrator.vibrate(VibrationEffect.createOneShot(
+                            10 + hoverVibration,
+                            vibrator.hasAmplitudeControl()
+                                    ? FeedbackConfig.vibrationAmplitude(hoverVibration)
+                                    : VibrationEffect.DEFAULT_AMPLITUDE));
+                } catch (Throwable error) {
+                    XposedBridge.log(TAG + " icon haptic failed: " + error);
+                }
             }
         }
 

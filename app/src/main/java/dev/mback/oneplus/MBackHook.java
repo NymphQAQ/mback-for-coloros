@@ -46,6 +46,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
             return;
         }
         if (!"com.android.systemui".equals(packageParam.packageName)) return;
+        hookNotificationShade(packageParam.classLoader);
         hookSystemUiEdgeGesturePipeline(packageParam.classLoader);
         Class<?> cls = XposedHelpers.findClassIfExists(
                 "com.android.systemui.navigationbar.views.NavigationBarView", packageParam.classLoader);
@@ -85,7 +86,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                 if (param.thisObject instanceof ViewGroup) detach((ViewGroup) param.thisObject);
             }
         });
-        XposedBridge.log(TAG + " v0.6.7-adjustable-true-arc registered: " + cls.getName()
+        XposedBridge.log(TAG + " v0.6.8-adaptive-arc-shade-guard registered: " + cls.getName()
                 + " dispatch=" + dispatchOwner.getName());
     }
 
@@ -115,6 +116,10 @@ public final class MBackHook implements IXposedHookLoadPackage {
                     boolean enabled = Settings.Global.getInt(context.getContentResolver(),
                             CornerAppMenu.ENABLE_KEY, 0) == 1;
                     boolean inside = false;
+                    if (enabled && Settings.Global.getInt(
+                            context.getContentResolver(), ShadeVisibility.KEY, 0) == 1) {
+                        enabled = false;
+                    }
                     if (enabled) {
                         android.app.KeyguardManager km = (android.app.KeyguardManager)
                                 context.getSystemService(android.content.Context.KEYGUARD_SERVICE);
@@ -154,6 +159,39 @@ public final class MBackHook implements IXposedHookLoadPackage {
         XposedBridge.log(TAG + " Launcher Quickstep corner-region filter active");
     }
 
+    private static void hookNotificationShade(ClassLoader loader) {
+        final Class<?> panel = XposedHelpers.findClassIfExists(
+                "com.android.systemui.shade.NotificationPanelViewController", loader);
+        if (panel == null) {
+            XposedBridge.log(TAG + " notification shade controller not found");
+            return;
+        }
+        // ColorOS 17 calls setExpandedHeightInternal(float, Boolean) throughout
+        // shade transitions. Hook AFTER the fraction changes, then notify the
+        // two corner shields and Launcher only if expanded/collapsed flips.
+        XC_MethodHook observer = new XC_MethodHook() {
+            @Override protected void afterHookedMethod(MethodHookParam param) {
+                if (param.hasThrowable()) return;
+                updateShadeFromPanel(param.thisObject);
+            }
+        };
+        XposedBridge.hookAllConstructors(panel, observer);
+        XposedBridge.hookAllMethods(panel, "setExpandedHeightInternal", observer);
+        XposedBridge.log(TAG + " notification shade expand/collapse gate attached");
+    }
+
+    private static void updateShadeFromPanel(Object panelController) {
+        try {
+            float fraction = XposedHelpers.getFloatField(panelController,
+                    "mExpandedFraction");
+            View panelView = (View) XposedHelpers.getObjectField(panelController, "mView");
+            ShadeVisibility.update(panelView == null ? null : panelView.getContext(),
+                    fraction > .001f);
+        } catch (Throwable ignored) {
+            // SystemUI internals vary by ROM. Do not break shade animations.
+        }
+    }
+
     private static void hookSystemUiEdgeGesturePipeline(ClassLoader loader) {
         final Class<?> edge = XposedHelpers.findClassIfExists(
                 "com.android.systemui.navigationbar.gestural.EdgeBackGestureHandler", loader);
@@ -182,6 +220,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                     boolean isCorner = context != null
                             && Settings.Global.getInt(context.getContentResolver(),
                                     CornerAppMenu.ENABLE_KEY, 0) == 1;
+                    if (isCorner && ShadeVisibility.isExpanded()) isCorner = false;
                     if (isCorner) {
                         android.app.KeyguardManager km = (android.app.KeyguardManager)
                                 context.getSystemService(android.content.Context.KEYGUARD_SERVICE);
