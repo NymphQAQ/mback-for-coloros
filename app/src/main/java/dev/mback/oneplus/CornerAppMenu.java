@@ -2,19 +2,20 @@ package dev.mback.oneplus;
 
 import android.animation.ValueAnimator;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.Path;
+import android.graphics.BitmapShader;
 import android.graphics.PixelFormat;
+import android.graphics.Shader;
 import android.graphics.drawable.Drawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 import android.view.Gravity;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.animation.DecelerateInterpolator;
@@ -26,33 +27,26 @@ import java.util.List;
 import de.robv.android.xposed.XposedBridge;
 
 /**
- * Small-window shortcuts based on the diagonal arrangement in the supplied
- * sketch and the Flyme 8/9 illustrations. No white sheet or full-screen fan.
- *
- * Performance: app icons are resolved and rasterized ONCE off the SystemUI UI
- * thread. Per-frame rendering uses only hardware-accelerated bitmap blits,
- * reusable Paints and float transforms, with no shadows/clips/allocations.
+ * Flyme-style gesture-only diagonal row.
+ * Seven positions maximum, with "More" fixed in the LOWEST position.
+ * This view NEVER takes touches and is always removed at UP/CANCEL.
+ * Application icons are pre-rasterized off the SystemUI UI thread.
  */
 final class CornerAppMenu {
     static final String ENABLE_KEY = "mback_corner_menu_enabled";
     static final String APPS_KEY = "mback_corner_menu_apps";
-    static final String PREVIEW_KEY = "mback_corner_preview";
     static final String DEFAULT_APPS =
             "com.tencent.mm,com.coloros.calculator,com.coloros.calendar,com.coloros.filemanager,com.android.settings,com.netease.cloudmusic";
     private static final String TAG = "[MBack-Corner]";
-    private static final long DISMISS_MS = 6000L;
 
     private final Context context;
     private final WindowManager windowManager;
     private final FreeformLauncher launcher;
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final Runnable timeout = this::hide;
     private volatile List<AppItem> cachedApps = Collections.emptyList();
     private volatile String cachedCsv;
     private volatile String loadingCsv;
-
-    private MenuView view;
-    private WindowManager.LayoutParams layout;
+    private RowView view;
 
     CornerAppMenu(Context context) {
         this.context = context;
@@ -61,169 +55,147 @@ final class CornerAppMenu {
         prepare();
     }
 
-    /**
-     * Called at boot and after app-list changes, never from onDraw or
-     * touch dispatch. PackageManager and icon drawing can take many ms.
-     */
     void prepare() {
         String csv = Settings.Global.getString(context.getContentResolver(), APPS_KEY);
         if (csv == null || csv.isEmpty()) csv = DEFAULT_APPS;
         if (csv.equals(cachedCsv) || csv.equals(loadingCsv)) return;
-        loadingCsv = csv;
         final String requested = csv;
+        loadingCsv = requested;
         new Thread(() -> {
-            List<AppItem> result = loadApps(requested);
+            List<AppItem> prepared = loadApps(requested);
             main.post(() -> {
                 if (requested.equals(loadingCsv)) {
-                    cachedApps = Collections.unmodifiableList(result);
+                    cachedApps = Collections.unmodifiableList(prepared);
                     cachedCsv = requested;
                     loadingCsv = null;
-                    XposedBridge.log(TAG + " pre-rendered icons=" + result.size());
+                    XposedBridge.log(TAG + " cached circular icons=" + prepared.size());
                 }
             });
         }, "mback-icon-cache").start();
     }
 
     boolean isOpened() { return view != null; }
+    boolean isGestureActive() { return view != null; }
 
-    boolean isGestureActive() {
-        return view != null && layout != null
-                && (layout.flags & WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0;
-    }
-
-    void releaseGesture() { allowTaps(); }
-
-    void show(int side) { show(side, false); }
-    void showForGesture(int side) { show(side, true); }
-
-    private void show(int side, boolean activeGesture) {
+    void showForGesture(int side) {
         hide();
         if (context.getResources().getConfiguration().orientation
                 != android.content.res.Configuration.ORIENTATION_PORTRAIT) return;
         try {
-            // Zero icon loading or Bitmap drawing on this gesture path.
-            MenuView next = new MenuView(context, side, cachedApps);
-            android.graphics.Point display = new android.graphics.Point();
-            windowManager.getDefaultDisplay().getRealSize(display);
-            // All four shortcuts live within the bottom 0.45 screen widths.
-            // A compact overlay costs far less GPU composition than drawing
-            // a transparent layer over the whole physical display.
-            int overlayHeight = Math.min(display.y, Math.round(display.x * .58f));
+            RowView next = new RowView(context, side, cachedApps);
+            android.graphics.Point size = new android.graphics.Point();
+            windowManager.getDefaultDisplay().getRealSize(size);
+            // 0.745w for top icon plus headroom. Avoid a fullscreen overlay.
+            int overlayHeight = Math.min(size.y, Math.round(size.x * .87f));
             WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
                     overlayHeight,
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                            | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                             | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                             | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-                            | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
-                            | (activeGesture ? WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE : 0),
+                            | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
                     PixelFormat.TRANSLUCENT);
+            lp.gravity = Gravity.LEFT | Gravity.BOTTOM;
             lp.setFitInsetsTypes(0);
             lp.setFitInsetsSides(0);
-            lp.gravity = Gravity.BOTTOM | Gravity.LEFT;
             lp.setTitle("MBack Flyme Shortcut");
             windowManager.addView(next, lp);
             view = next;
-            layout = lp;
             next.enter();
-            if (activeGesture) {
-                main.postDelayed(() -> {
-                    if (isGestureActive()) allowTaps();
-                }, 3000);
-            }
-            resetTimeout();
-            XposedBridge.log(TAG + " diagonal row shown side=" + side
+            XposedBridge.log(TAG + " gesture-only diagonal shown side=" + side
                     + " apps=" + cachedApps.size());
         } catch (Throwable error) {
-            XposedBridge.log(TAG + " row show failed: " + error);
+            XposedBridge.log(TAG + " show failed: " + error);
             hide();
         }
     }
 
     void highlightBySwipe(float rawX, float rawY) {
-        MenuView showing = view;
+        RowView showing = view;
+        if (showing != null) showing.select(rawX, rawY);
+    }
+
+    /** Called exactly once for the matching finger UP, even over empty space. */
+    void finishGesture(float rawX, float rawY) {
+        RowView showing = view;
         if (showing == null) return;
-        if (showing.select(rawX, rawY)) resetTimeout();
-    }
-
-    boolean chooseBySwipe(float rawX, float rawY) {
-        MenuView showing = view;
-        if (showing == null) return false;
-        AppItem chosen = showing.hit(rawX, rawY);
-        if (chosen != null) {
-            hide();
-            launcher.open(chosen.packageName);
-            XposedBridge.log(TAG + " shortcut launched: " + chosen.packageName);
-            return true;
+        int position = showing.hit(rawX, rawY);
+        AppItem selected = position > 0 && position <= showing.apps.size()
+                ? showing.apps.get(position - 1) : null;
+        boolean more = position == FlymeArcGeometry.MORE_POSITION;
+        // Release the window BEFORE starting any activity to prevent overlays
+        // from sitting on top of native ColorOS window transitions.
+        hide();
+        if (selected != null) {
+            launcher.open(selected.packageName);
+            XposedBridge.log(TAG + " released on shortcut " + selected.packageName);
+        } else if (more) {
+            try {
+                Intent intent = new Intent();
+                intent.setClassName("dev.mback.oneplus",
+                        "dev.mback.oneplus.MoreAppsActivity");
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(intent);
+                XposedBridge.log(TAG + " released on More -> app management");
+            } catch (Throwable error) {
+                XposedBridge.log(TAG + " cannot open app management: " + error);
+            }
+        } else {
+            XposedBridge.log(TAG + " released on empty space; row dismissed");
         }
-        if (showing.hitMore(rawX, rawY)) {
-            showing.nextPage();
-            resetTimeout();
-        }
-        // If no icon was selected, keep the row for a subsequent tap.
-        allowTaps();
-        return false;
-    }
-
-    private void resetTimeout() {
-        main.removeCallbacks(timeout);
-        main.postDelayed(timeout, DISMISS_MS);
-    }
-
-    private void allowTaps() {
-        if (view == null || layout == null
-                || (layout.flags & WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0) return;
-        layout.flags &= ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
-        try { windowManager.updateViewLayout(view, layout); }
-        catch (Throwable error) { XposedBridge.log(TAG + " allow taps failed: " + error); }
     }
 
     void hide() {
-        main.removeCallbacks(timeout);
-        MenuView old = view;
+        RowView old = view;
         view = null;
-        layout = null;
-        if (old == null) return;
-        old.stop();
-        try { windowManager.removeViewImmediate(old); }
-        catch (Throwable error) { XposedBridge.log(TAG + " remove row failed: " + error); }
+        if (old != null) {
+            old.stop();
+            try { windowManager.removeViewImmediate(old); }
+            catch (Throwable error) { XposedBridge.log(TAG + " remove failed: " + error); }
+        }
     }
 
     private List<AppItem> loadApps(String csv) {
-        ArrayList<AppItem> apps = new ArrayList<>();
+        ArrayList<AppItem> result = new ArrayList<>();
         PackageManager pm = context.getPackageManager();
-        for (String value : csv.split(",")) {
-            String packageName = CornerGesture.sanitize(value.trim());
-            if (packageName == null || "none".equals(packageName)
-                    || pm.getLaunchIntentForPackage(packageName) == null) continue;
-            boolean duplicate = false;
-            for (AppItem item : apps) if (packageName.equals(item.packageName)) duplicate = true;
-            if (duplicate) continue;
+        for (String item : csv.split(",")) {
+            String pkg = CornerGesture.sanitize(item.trim());
+            if (pkg == null || "none".equals(pkg)
+                    || pm.getLaunchIntentForPackage(pkg) == null) continue;
+            boolean alreadyAdded = false;
+            for (AppItem app : result) if (pkg.equals(app.packageName)) alreadyAdded = true;
+            if (alreadyAdded) continue;
             try {
-                Drawable icon = pm.getApplicationIcon(packageName);
-                // Pre-rasterize adaptive icons and circular clipping once.
-                int size = Math.round(39f * context.getResources().getDisplayMetrics().density);
-                Bitmap rendered = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
-                Canvas canvas = new Canvas(rendered);
-                Paint white = new Paint(Paint.ANTI_ALIAS_FLAG);
-                white.setColor(Color.WHITE);
-                float center = size / 2f, radius = center - 2f;
-                canvas.drawCircle(center, center, radius, white);
-                Path mask = new Path();
-                mask.addCircle(center, center, radius - 1.5f, Path.Direction.CW);
-                canvas.save();
-                canvas.clipPath(mask);
-                icon.setBounds(2, 2, size - 2, size - 2);
-                icon.draw(canvas);
-                canvas.restore();
-                apps.add(new AppItem(packageName, rendered));
+                Bitmap bitmap = createCircularIcon(pm.getApplicationIcon(pkg));
+                result.add(new AppItem(pkg, bitmap));
             } catch (Throwable error) {
-                XposedBridge.log(TAG + " icon prerender skipped: " + packageName + " " + error);
+                XposedBridge.log(TAG + " cannot rasterize " + pkg + ": " + error);
             }
-            if (apps.size() == 6) break;
+            if (result.size() == FlymeArcGeometry.MAX_APPS) break;
         }
-        return apps;
+        return result;
+    }
+
+    /** Direct circular clipping, NO white disk, inset, or inner white ring. */
+    private Bitmap createCircularIcon(Drawable icon) {
+        int size = Math.round(44f * context.getResources().getDisplayMetrics().density);
+        Bitmap source = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        Canvas sourceCanvas = new Canvas(source);
+        // Draw the actual artwork larger than its safe-area padding. Crop
+        // square app backgrounds rather than shrinking them inside a circle.
+        int overscan = Math.round(size * .18f);
+        icon.setBounds(-overscan, -overscan, size + overscan, size + overscan);
+        icon.draw(sourceCanvas);
+
+        Bitmap circle = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        fill.setShader(new BitmapShader(source, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP));
+        float center = size * .5f;
+        new Canvas(circle).drawCircle(center, center, center, fill);
+        source.recycle();
+        return circle;
     }
 
     private static final class AppItem {
@@ -235,160 +207,98 @@ final class CornerAppMenu {
         }
     }
 
-    private final class MenuView extends View {
-        private final int side;
-        private final List<AppItem> apps;
-        private final Paint iconsPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-        private final Paint circlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint ringPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final class RowView extends View {
+        final int side;
+        final List<AppItem> apps;
+        private final Paint iconPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        private final Paint morePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final float density;
-        private final float iconHalf;
-        private final float dotRadius;
-        private ValueAnimator animator;
-        private float reveal = 0f;
-        private int selected = -1;
-        private int page;
-        private final int[] screenLocation = new int[2];
+        private final int[] windowPosition = new int[2];
+        private ValueAnimator animation;
+        private float reveal;
+        private int hovered = -1;
 
-        MenuView(Context context, int side, List<AppItem> apps) {
-            super(context);
+        RowView(Context ctx, int side, List<AppItem> apps) {
+            super(ctx);
             this.side = side;
             this.apps = apps;
-            density = context.getResources().getDisplayMetrics().density;
-            iconHalf = dp(19.5f);
-            dotRadius = dp(16f);
-            ringPaint.setColor(Color.WHITE);
-            ringPaint.setStyle(Paint.Style.STROKE);
-            ringPaint.setStrokeWidth(dp(1.25f));
-            setClickable(true);
-            // No LAYER_TYPE_SOFTWARE: Android's hardware renderer keeps
-            // four small bitmaps on GPU and performs cheap transforms.
-            setContentDescription("Flyme 斜列小窗快捷启动");
+            density = ctx.getResources().getDisplayMetrics().density;
+            setContentDescription("Flyme 七位置斜列小窗菜单");
         }
 
-        float dp(float n) { return n * density; }
+        private float dp(float value) { return value * density; }
 
         void enter() {
-            animator = ValueAnimator.ofFloat(0f, 1f);
-            animator.setDuration(185);
-            animator.setInterpolator(new DecelerateInterpolator(1.45f));
-            animator.addUpdateListener(a -> {
+            animation = ValueAnimator.ofFloat(0f, 1f);
+            animation.setDuration(190);
+            animation.setInterpolator(new DecelerateInterpolator(1.7f));
+            animation.addUpdateListener(a -> {
                 reveal = (Float) a.getAnimatedValue();
                 postInvalidateOnAnimation();
             });
-            animator.start();
+            animation.start();
         }
 
         void stop() {
-            if (animator != null) animator.cancel();
+            if (animation != null) animation.cancel();
         }
 
-        private int visibleCount() {
-            return FlymeArcGeometry.visibleCount(apps.size(), page);
+        int hit(float rawX, float rawY) {
+            getLocationOnScreen(windowPosition);
+            return FlymeArcGeometry.hit(rawX - windowPosition[0],
+                    rawY - windowPosition[1], side, getWidth(), getHeight(),
+                    FlymeArcGeometry.visiblePositions(apps.size()), dp(30f));
         }
 
-        void nextPage() {
-            int pages = Math.max(1, (apps.size() + FlymeArcGeometry.VISIBLE_SHORTCUTS - 1)
-                    / FlymeArcGeometry.VISIBLE_SHORTCUTS);
-            page = (page + 1) % pages;
-            selected = -1;
-            reveal = 1f;
-            postInvalidateOnAnimation();
+        void select(float rawX, float rawY) {
+            int current = hit(rawX, rawY);
+            if (current != hovered) {
+                hovered = current;
+                postInvalidateOnAnimation();
+            }
         }
 
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-            int count = visibleCount();
-            float w = getWidth(), h = getHeight();
-            if (w <= 0 || h <= 0) return;
-            for (int i = 0; i < count; i++) {
-                float delay = i * .055f;
+            float width = getWidth();
+            float height = getHeight();
+            if (width <= 0 || height <= 0) return;
+
+            final int count = FlymeArcGeometry.visiblePositions(apps.size());
+            // Paint ascending app row, with More as the lowest stop.
+            for (int pos = 0; pos < count; pos++) {
+                float delay = pos * .037f;
                 float step = Math.max(0f, Math.min(1f, (reveal - delay) / (1f - delay)));
-                // Appear in place with a small upward travel, rather than
-                // scaling all icons through a huge diagonal path.
-                float cx = FlymeArcGeometry.x(side, i, w);
-                float cy = FlymeArcGeometry.y(i, w, h) + (1f - step) * dp(12f);
-                AppItem item = apps.get(page * FlymeArcGeometry.VISIBLE_SHORTCUTS + i);
-                float scale = (.86f + .14f * step) * (selected == i ? 1.13f : 1f);
-                int alpha = Math.round(step * 255f);
-                iconsPaint.setAlpha(alpha);
+                if (step <= 0) continue;
+                float x = FlymeArcGeometry.x(side, pos, width);
+                float y = FlymeArcGeometry.y(pos, width, height)
+                        + (1f - step) * dp(9f);
+                float scale = (.84f + .16f * step) * (hovered == pos ? 1.13f : 1f);
+                int alpha = Math.round(255f * step);
+
                 canvas.save();
-                canvas.translate(cx, cy);
+                canvas.translate(x, y);
                 canvas.scale(scale, scale);
-                canvas.drawBitmap(item.bitmap, -item.bitmap.getWidth() / 2f,
-                        -item.bitmap.getHeight() / 2f, iconsPaint);
-                if (selected == i) {
-                    ringPaint.setAlpha(alpha);
-                    canvas.drawCircle(0f, 0f, iconHalf + dp(2f), ringPaint);
+                if (pos == 0) {
+                    drawMore(canvas, alpha);
+                } else {
+                    Bitmap icon = apps.get(pos - 1).bitmap;
+                    iconPaint.setAlpha(alpha);
+                    canvas.drawBitmap(icon, -icon.getWidth() * .5f,
+                            -icon.getHeight() * .5f, iconPaint);
                 }
                 canvas.restore();
             }
-            drawMoreButton(canvas);
         }
 
-        private float moreX() {
-            return side == CornerGesture.LEFT ? dp(28) : getWidth() - dp(28);
-        }
-
-        private float moreY() {
-            return getHeight() - dp(32);
-        }
-
-        private void drawMoreButton(Canvas canvas) {
-            float x = moreX(), y = moreY();
-            circlePaint.setColor(0xFF228EFF);
-            circlePaint.setAlpha(Math.round(255f * reveal));
-            canvas.drawCircle(x, y, dotRadius, circlePaint);
-            circlePaint.setColor(Color.WHITE);
-            circlePaint.setAlpha(Math.round(255f * reveal));
-            for (int i = -1; i <= 1; i++) {
-                canvas.drawCircle(x + dp(5.5f * i), y, dp(2.1f), circlePaint);
-            }
-        }
-
-        private void locate() {
-            getLocationOnScreen(screenLocation);
-        }
-
-        AppItem hit(float rawX, float rawY) {
-            locate();
-            int which = FlymeArcGeometry.hit(
-                    rawX - screenLocation[0], rawY - screenLocation[1],
-                    side, getWidth(), getHeight(), visibleCount(), dp(24f));
-            return which == -1 ? null
-                    : apps.get(page * FlymeArcGeometry.VISIBLE_SHORTCUTS + which);
-        }
-
-        boolean hitMore(float rawX, float rawY) {
-            locate();
-            float dx = rawX - screenLocation[0] - moreX();
-            float dy = rawY - screenLocation[1] - moreY();
-            return dx * dx + dy * dy <= dp(25f) * dp(25f);
-        }
-
-        boolean select(float rawX, float rawY) {
-            locate();
-            int next = FlymeArcGeometry.hit(
-                    rawX - screenLocation[0], rawY - screenLocation[1],
-                    side, getWidth(), getHeight(), visibleCount(), dp(24f));
-            if (next == selected) return false;
-            selected = next;
-            postInvalidateOnAnimation();
-            return true;
-        }
-
-        @Override public boolean onTouchEvent(MotionEvent event) {
-            int action = event.getActionMasked();
-            if (action == MotionEvent.ACTION_MOVE) {
-                highlightBySwipe(event.getRawX(), event.getRawY());
-                return true;
-            }
-            if (action == MotionEvent.ACTION_UP) {
-                if (!chooseBySwipe(event.getRawX(), event.getRawY())
-                        && !hitMore(event.getRawX(), event.getRawY())) hide();
-                return true;
-            }
-            return true;
+        private void drawMore(Canvas canvas, int alpha) {
+            morePaint.setColor(0xFF2189FE);
+            morePaint.setAlpha(alpha);
+            canvas.drawCircle(0f, 0f, dp(22f), morePaint);
+            morePaint.setColor(Color.WHITE);
+            morePaint.setAlpha(alpha);
+            for (int i = -1; i <= 1; i++)
+                canvas.drawCircle(dp(6.4f * i), 0f, dp(2.35f), morePaint);
         }
     }
 }

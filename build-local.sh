@@ -7,7 +7,7 @@ OUT="app/build/local"
 # Remove old build outputs, including legacy root-service bytecode.
 rm -rf "$OUT/classes" "$OUT/dex" "$OUT/xposed-stubs"
 mkdir -p "$OUT/classes" "$OUT/dex" "$OUT/xposed-stubs"
-"$BT/aapt2" link -o "$OUT/unsigned.apk" --manifest app/src/main/AndroidManifest.xml -A app/src/main/assets -I "$PLATFORM" --min-sdk-version 29 --target-sdk-version 35 --version-code 21 --version-name 0.6.5 --auto-add-overlay
+"$BT/aapt2" link -o "$OUT/unsigned.apk" --manifest app/src/main/AndroidManifest.xml -A app/src/main/assets -I "$PLATFORM" --min-sdk-version 29 --target-sdk-version 35 --version-code 22 --version-name 0.6.6 --auto-add-overlay
 find stubs -name '*.java' -print0 | xargs -0 javac -source 8 -target 8 -classpath "$PLATFORM" -d "$OUT/xposed-stubs"
 find app/src/main/java -name '*.java' -print0 | xargs -0 javac -source 8 -target 8 -classpath "$PLATFORM:$OUT/xposed-stubs" -d "$OUT/classes"
 "$BT/d8" --min-api 29 --lib "$PLATFORM" --output "$OUT/dex" $(find "$OUT/classes" -name '*.class')

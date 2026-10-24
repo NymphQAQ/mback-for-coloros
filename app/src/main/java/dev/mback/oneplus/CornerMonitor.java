@@ -86,15 +86,15 @@ final class CornerMonitor {
                 if (action == MotionEvent.ACTION_MOVE) {
                     menu.highlightBySwipe(event.getRawX(), event.getRawY());
                 } else if (action == MotionEvent.ACTION_UP) {
-                    boolean launched = menu.chooseBySwipe(event.getRawX(), event.getRawY());
-                    XposedBridge.log(TAG + " drag finished launched=" + launched);
+                    menu.finishGesture(event.getRawX(), event.getRawY());
                     side = CornerGesture.NONE;
                 } else if (action == MotionEvent.ACTION_CANCEL) {
-                    menu.releaseGesture();
+                    menu.hide();
                     side = CornerGesture.NONE;
                 }
                 return;
             }
+            // Menu is never sticky: it lives exclusively during the finger gesture.
             if (menu.isOpened()) return;
             if (action == MotionEvent.ACTION_DOWN) {
                 side = CornerGesture.NONE;

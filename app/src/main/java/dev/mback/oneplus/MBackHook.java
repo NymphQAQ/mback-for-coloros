@@ -85,7 +85,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                 if (param.thisObject instanceof ViewGroup) detach((ViewGroup) param.thisObject);
             }
         });
-        XposedBridge.log(TAG + " v0.6.5-diagonal-fast-ui registered: " + cls.getName()
+        XposedBridge.log(TAG + " v0.6.6-gesture-only-seven-icons registered: " + cls.getName()
                 + " dispatch=" + dispatchOwner.getName());
     }
 
@@ -243,7 +243,6 @@ public final class MBackHook implements IXposedHookLoadPackage {
         private boolean cornerEnabled;
         private CornerAppMenu cornerMenu;
         private CornerMonitor cornerMonitor;
-        private int previewCount;
         private int scalePercent = FeedbackConfig.DEFAULT_SCALE;
         private int scaleDuration = FeedbackConfig.DEFAULT_DURATION;
         private int vibrationLevel = FeedbackConfig.DEFAULT_VIBRATION;
@@ -272,12 +271,6 @@ public final class MBackHook implements IXposedHookLoadPackage {
                         if (cornerEnabled) cornerMonitor.start();
                         else cornerMonitor.stop();
                     }
-                    int newPreview = Settings.Global.getInt(root.getContext().getContentResolver(),
-                            CornerAppMenu.PREVIEW_KEY, 0);
-                    if (newPreview != previewCount) {
-                        previewCount = newPreview;
-                        if (cornerMenu != null) cornerMenu.show(CornerGesture.RIGHT);
-                    }
                     if (!cornerEnabled && cornerMenu != null) cornerMenu.hide();
                     loadFeedbackSettings();
                     if (!active) {
@@ -296,8 +289,6 @@ public final class MBackHook implements IXposedHookLoadPackage {
             cornerMenu = new CornerAppMenu(root.getContext());
             cornerMonitor = new CornerMonitor(root.getContext(), cornerMenu);
             if (cornerEnabled) cornerMonitor.start();
-            previewCount = Settings.Global.getInt(root.getContext().getContentResolver(),
-                    CornerAppMenu.PREVIEW_KEY, 0);
             loadFeedbackSettings();
             root.addView(cover, new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -313,8 +304,6 @@ public final class MBackHook implements IXposedHookLoadPackage {
                     Settings.Global.getUriFor(CornerAppMenu.ENABLE_KEY), false, settingObserver);
             root.getContext().getContentResolver().registerContentObserver(
                     Settings.Global.getUriFor(CornerAppMenu.APPS_KEY), false, settingObserver);
-            root.getContext().getContentResolver().registerContentObserver(
-                    Settings.Global.getUriFor(CornerAppMenu.PREVIEW_KEY), false, settingObserver);
             Class<?> listenerClass = Class.forName("android.view.ViewTreeObserver$OnComputeInternalInsetsListener");
             insetsListener = Proxy.newProxyInstance(listenerClass.getClassLoader(),
                     new Class<?>[]{listenerClass}, (proxy, method, args) -> {
