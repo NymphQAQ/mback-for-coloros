@@ -85,7 +85,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                 if (param.thisObject instanceof ViewGroup) detach((ViewGroup) param.thisObject);
             }
         });
-        XposedBridge.log(TAG + " v0.6.4-flyme-corners registered: " + cls.getName()
+        XposedBridge.log(TAG + " v0.6.5-diagonal-fast-ui registered: " + cls.getName()
                 + " dispatch=" + dispatchOwner.getName());
     }
 
@@ -267,6 +267,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                 @Override public void onChange(boolean selfChange) {
                     active = readEnabled();
                     cornerEnabled = readCornerEnabled();
+                    if (cornerMenu != null) cornerMenu.prepare();
                     if (cornerMonitor != null) {
                         if (cornerEnabled) cornerMonitor.start();
                         else cornerMonitor.stop();

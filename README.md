@@ -1,6 +1,6 @@
 # MBack · Xposed (OnePlus 15 / ColorOS)
 
-在 ColorOS 手势导航的小白条上模拟魅族 mBack：**轻点返回，上滑仍保留系统原有导航功能**。v0.4 加入缩放与可调震动，v0.5 加入 Flyme 风格双底角小窗菜单。
+在 ColorOS 手势导航的小白条上模拟魅族 mBack：**轻点返回，上滑仍保留系统原有导航功能**。v0.4 加入缩放与可调震动，v0.5 加入 Flyme 风格双底角小窗菜单，v0.6.5 将菜单改成紧凑斜列并优化动画性能。
 
 已在一加 15（PLK110）、Android 17 / API 37、Vector Framework 2.2 / Xposed API 102 上测试。
 
@@ -42,6 +42,16 @@ adb shell su -c '/data/adb/lspd/cli modules enable dev.mback.oneplus'
 adb shell su -c '/data/adb/lspd/cli scope add dev.mback.oneplus com.android.systemui/0'
 adb shell su -c '/data/adb/lspd/cli scope add dev.mback.oneplus com.android.launcher/0'
 ```
+
+## v0.6.5（源码预览版，不发布 APK）：Flyme 斜列布局及动画性能
+
+- 参考用户手绘位置、[魅族官方《Flyme 8 小窗模式 2.0 设计历程》](https://mwx-page.meizu.com/xiaochuangmoshi02.html)和 [Flyme 9 小窗模式 3.0 官方演示](https://url.meizu.com/meizufu224)，重新调整图标轨迹。官方小窗菜单强调从边角沿不同方向滑动，经过目标图标后松手即打开，而不需要手指转弯。
+- **UI 布局按本项目需求使用紧凑斜列，而不是上一版铺满大半屏的“扇面”。** 右侧最多同时显示四枚圆形快捷应用，从屏幕下方偏中间处向右上排列，左侧对称镜像。它们的横向相对坐标约为 `59% / 70% / 81% / 92%` 屏宽，离底边依次约为 `0.12 / 0.235 / 0.345 / 0.45` 屏宽。蓝色三点入口点击切换至剩余应用页（原最多 6 个应用的设置仍有效）。
+- 动效不再使用软件渲染（旧代码设置了 `LAYER_TYPE_SOFTWARE`，每帧 `setShadowLayer`、新建 `RadialGradient`、`clipPath` 并调用 `Drawable.draw`），新版本将应用图标提前在后台裁剪、绘制为 Bitmap 后缓存；每帧仅用硬件 Canvas 位图绘制、alpha 和约 12dp 的轻微上移。185ms 衰减插值动画、错开依次出现。
+- 菜单从全屏覆盖层改成仅覆盖底部 `0.58 × 屏宽` 高度的局部窗口，降低 GPU 合成开销。滑选时缓存触点坐标数组，**只有图标选中状态改变时**才重新设置超时，减少高频触摸事件对主线程的开销。
+- **实机回归**：一加 15 / ColorOS 17，竖屏右下角滑选松手原生小窗启动日历成功、左下角镜像滑选亦成功，屏幕中间上滑回桌面成功，原设定 110% 缩放、240ms 动画、3 级振动不变。窗口实测为 `[0,2034]~[1272,2772]`，不再是全屏覆盖层。
+- **实机帧时间**：连续触发菜单 8 次，SystemUI `dumpsys gfxinfo` 记录 122 帧、0 janky（0.00%），90/95/99 分位分别约为 10/12/13ms，无 slow bitmap uploads、slow UI thread 和 missed VSync。数据为这台设备的短时取样，其他场景和长时间使用仍需继续观察。
+- **仅提交源码，不发布安装包**：本次将 `.github/workflows/release.yml` 改为只做编译、APK 签名校验和 JVM 回归测试，明确移除 `action-gh-release`、附件上传与内容写入权限。GitHub Actions 运行期间生成的临时 APK 不会被公开上传或发布。旧版 v0.6.4 Release 保留供回退。
 
 ## v0.6.4：Flyme 扇形 UI 与原生导航手势前段屏蔽
 

@@ -1,4 +1,4 @@
-name: Build and publish APK
+name: Verify MBack source (no APK publishing)
 
 on:
   push:
@@ -11,11 +11,13 @@ on:
       - "tests/**"
   workflow_dispatch:
 
+# Read-only CI. Deliberately no GitHub Release, tag, artifact upload,
+# package publishing, or repository write permissions until requested.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source
@@ -31,32 +33,28 @@ jobs:
           test -n "$SDKMANAGER"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platforms;android-35" "build-tools;36.0.0"
-      - name: Create debug signing key
+      - name: Create temporary CI-only signing key
         run: |
           mkdir -p "$HOME/.android"
           keytool -genkeypair -v -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-      - name: Build signed APK
-        run: bash build-local.sh
-      - name: Verify APK signature
-        run: "$ANDROID_HOME/build-tools/36.0.0/apksigner verify app/build/local/mback-debug.apk"
-      - name: Publish v0.6.4 Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v0.6.4
-          name: MBack for ColorOS v0.6.4
-          prerelease: true
-          generate_release_notes: true
-          files: app/build/local/mback-debug.apk
-          fail_on_unmatched_files: true
-          body: |
-            Experimental Xposed module for OnePlus 15 / ColorOS (Android 17).
-            Scopes: com.android.systemui AND com.android.launcher. Requires Vector Framework or compatible LSPosed.
-            New: Flyme-inspired circular fan UI replaces the previous bottom sheet.
-            Filter native ColorOS back and Quickstep gesture prefixes in two
-            bottom corners, without changing central navigation gestures.
-            Invisible bottom-corner touch shields prevent tap-through.
-            Swipe and release on an app, or tap a shortcut to open a native
-            ColorOS floating window. Up to 6 selectable apps; portrait only.
-            The corner feature remains off by default on a fresh install.
-            Retains mBack tap-to-back, visual-center scaling and haptic feedback.
-            This is not a pixel-perfect recreation of Flyme. Debug-signed APK.
+      - name: Compile source and check APK locally
+        run: |
+          bash build-local.sh
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify app/build/local/mback-debug.apk
+      - name: Run pure Java regression tests
+        run: |
+          mkdir -p app/build/local/tests
+          javac -d app/build/local/tests \
+            app/src/main/java/dev/mback/oneplus/CornerGesture.java \
+            tests/dev/mback/oneplus/CornerGestureTest.java \
+            app/src/main/java/dev/mback/oneplus/FlymeArcGeometry.java \
+            tests/dev/mback/oneplus/FlymeArcGeometryTest.java \
+            app/src/main/java/dev/mback/oneplus/HitZone.java \
+            tests/dev/mback/oneplus/HitZoneTest.java \
+            app/src/main/java/dev/mback/oneplus/FeedbackConfig.java \
+            tests/dev/mback/oneplus/FeedbackConfigTest.java \
+            app/src/main/java/dev/mback/oneplus/PillGeometry.java \
+            tests/dev/mback/oneplus/PillGeometryTest.java
+          for test in CornerGestureTest FlymeArcGeometryTest HitZoneTest FeedbackConfigTest PillGeometryTest; do
+            java -cp app/build/local/tests "dev.mback.oneplus.$test"
+          done
