@@ -39,11 +39,11 @@ jobs:
         run: bash build-local.sh
       - name: Verify APK signature
         run: "$ANDROID_HOME/build-tools/36.0.0/apksigner verify app/build/local/mback-debug.apk"
-      - name: Publish v0.3.0 Release
+      - name: Publish v0.4.0 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.3.0
-          name: MBack for ColorOS v0.3.0
+          tag_name: v0.4.0
+          name: MBack for ColorOS v0.4.0
           prerelease: true
           generate_release_notes: true
           files: app/build/local/mback-debug.apk
@@ -51,5 +51,5 @@ jobs:
           body: |
             Experimental build for OnePlus 15 / ColorOS (Android 17).
             Xposed (Vector / LSPosed) module. Scope: com.android.systemui.
-            Fixes navigation-handle tap-through and landscape positioning.
+            Adds configurable white-bar scaling (50%-150%, 80-500ms) and 10-level haptics.\n            Preserves tap-through fix, landscape navigation and original gestures.
             Debug-signed APK for testing; review the README and backup your setup.

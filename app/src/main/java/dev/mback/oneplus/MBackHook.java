@@ -1,6 +1,10 @@
 package dev.mback.oneplus;
 
 import android.database.ContentObserver;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.animation.TimeInterpolator;
+import android.view.animation.AccelerateDecelerateInterpolator;
 import android.graphics.Rect;
 import android.graphics.Region;
 import android.os.Handler;
@@ -76,7 +80,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                 if (param.thisObject instanceof ViewGroup) detach((ViewGroup) param.thisObject);
             }
         });
-        XposedBridge.log(TAG + " v0.3-full-hit-region registered: " + cls.getName()
+        XposedBridge.log(TAG + " v0.4-touch-feedback registered: " + cls.getName()
                 + " dispatch=" + dispatchOwner.getName());
     }
 
@@ -104,6 +108,11 @@ public final class MBackHook implements IXposedHookLoadPackage {
         private final ContentObserver settingObserver;
         private Object insetsListener;
         private boolean active;
+        private int scalePercent = FeedbackConfig.DEFAULT_SCALE;
+        private int scaleDuration = FeedbackConfig.DEFAULT_DURATION;
+        private int vibrationLevel = FeedbackConfig.DEFAULT_VIBRATION;
+        private View animatedHandle;
+        private boolean handleLogged;
         private final Rect hitRect = new Rect();
         private boolean pressed;
         private boolean moved;
@@ -120,7 +129,11 @@ public final class MBackHook implements IXposedHookLoadPackage {
             settingObserver = new ContentObserver(handler) {
                 @Override public void onChange(boolean selfChange) {
                     active = readEnabled();
-                    if (!active) pressed = false;
+                    loadFeedbackSettings();
+                    if (!active) {
+                        pressed = false;
+                        restoreHandle();
+                    }
                     root.requestLayout();
                     root.invalidate();
                 }
@@ -129,10 +142,17 @@ public final class MBackHook implements IXposedHookLoadPackage {
 
         void attach() throws Exception {
             active = readEnabled();
+            loadFeedbackSettings();
             root.addView(cover, new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             root.getContext().getContentResolver().registerContentObserver(
                     Settings.Global.getUriFor(SETTING), false, settingObserver);
+            root.getContext().getContentResolver().registerContentObserver(
+                    Settings.Global.getUriFor(FeedbackConfig.SCALE_KEY), false, settingObserver);
+            root.getContext().getContentResolver().registerContentObserver(
+                    Settings.Global.getUriFor(FeedbackConfig.DURATION_KEY), false, settingObserver);
+            root.getContext().getContentResolver().registerContentObserver(
+                    Settings.Global.getUriFor(FeedbackConfig.VIBRATION_KEY), false, settingObserver);
             Class<?> listenerClass = Class.forName("android.view.ViewTreeObserver$OnComputeInternalInsetsListener");
             insetsListener = Proxy.newProxyInstance(listenerClass.getClassLoader(),
                     new Class<?>[]{listenerClass}, (proxy, method, args) -> {
@@ -149,6 +169,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
         }
 
         void detach() {
+            restoreHandle();
             root.getContext().getContentResolver().unregisterContentObserver(settingObserver);
             if (insetsListener != null) {
                 try {
@@ -164,6 +185,81 @@ public final class MBackHook implements IXposedHookLoadPackage {
 
         private boolean readEnabled() {
             return Settings.Global.getInt(root.getContext().getContentResolver(), SETTING, 0) == 1;
+        }
+
+        private void loadFeedbackSettings() {
+            scalePercent = FeedbackConfig.scale(Settings.Global.getInt(
+                    root.getContext().getContentResolver(), FeedbackConfig.SCALE_KEY,
+                    FeedbackConfig.DEFAULT_SCALE));
+            scaleDuration = FeedbackConfig.duration(Settings.Global.getInt(
+                    root.getContext().getContentResolver(), FeedbackConfig.DURATION_KEY,
+                    FeedbackConfig.DEFAULT_DURATION));
+            vibrationLevel = FeedbackConfig.vibration(Settings.Global.getInt(
+                    root.getContext().getContentResolver(), FeedbackConfig.VIBRATION_KEY,
+                    FeedbackConfig.DEFAULT_VIBRATION));
+        }
+
+        private void restoreHandle() {
+            if (animatedHandle == null) return;
+            animatedHandle.animate().cancel();
+            animatedHandle.setScaleX(1f);
+            animatedHandle.setScaleY(1f);
+            animatedHandle = null;
+        }
+
+        private void playTapFeedback() {
+            playVibration();
+            View handle = findHandle(root);
+            if (handle == null || !handle.isShown() ||
+                    handle.getWidth() <= 0 || handle.getHeight() <= 0) {
+                if (!handleLogged) {
+                    XposedBridge.log(TAG + " no visible NavigationHandle found for animation");
+                    handleLogged = true;
+                }
+                return;
+            }
+            if (!handleLogged) {
+                XposedBridge.log(TAG + " animating handle " + handle.getClass().getName()
+                        + " " + handle.getWidth() + "x" + handle.getHeight());
+                handleLogged = true;
+            }
+            if (animatedHandle != null && animatedHandle != handle) restoreHandle();
+            animatedHandle = handle;
+            handle.animate().cancel();
+            handle.setPivotX(handle.getWidth() * .5f);
+            handle.setPivotY(handle.getHeight() * .5f);
+            handle.setScaleX(1f);
+            handle.setScaleY(1f);
+            final float targetScale = scalePercent / 100f;
+            final int shrinkMs = Math.max(1, Math.round(scaleDuration * .45f));
+            final int restoreMs = Math.max(1, scaleDuration - shrinkMs);
+            // Don't stretch or recolor the rest of the SystemUI navigation window.
+            handle.animate().scaleX(targetScale).scaleY(targetScale)
+                    .setDuration(shrinkMs)
+                    .setInterpolator(new AccelerateDecelerateInterpolator())
+                    .withEndAction(() -> handle.animate().scaleX(1f).scaleY(1f)
+                            .setDuration(restoreMs)
+                            .setInterpolator(new AccelerateDecelerateInterpolator())
+                            .start())
+                    .start();
+        }
+
+        private void playVibration() {
+            int level = vibrationLevel;
+            if (level == 0) return;
+            try {
+                Vibrator vibrator = (Vibrator) root.getContext().getSystemService(
+                        android.content.Context.VIBRATOR_SERVICE);
+                if (vibrator != null && vibrator.hasVibrator()) {
+                    vibrator.vibrate(VibrationEffect.createOneShot(
+                            FeedbackConfig.vibrationDuration(level),
+                            vibrator.hasAmplitudeControl()
+                                    ? FeedbackConfig.vibrationAmplitude(level)
+                                    : VibrationEffect.DEFAULT_AMPLITUDE));
+                }
+            } catch (Throwable error) {
+                XposedBridge.log(TAG + " vibration unavailable: " + error);
+            }
         }
 
         private void updateInsets(Object info) {
@@ -265,6 +361,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                     if (pressed && !moved && event.getEventTime() - downAt <= 380
                             && event.getEventTime() - lastBackAt > 280) {
                         lastBackAt = event.getEventTime();
+                        playTapFeedback();
                         injectBack();
                     }
                     pressed = false;

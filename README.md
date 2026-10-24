@@ -1,6 +1,6 @@
 # MBack · Xposed (OnePlus 15 / ColorOS)
 
-在 ColorOS 手势导航的小白条上模拟魅族 mBack：**轻点返回，上滑仍保留系统原有导航功能**。
+在 ColorOS 手势导航的小白条上模拟魅族 mBack：**轻点返回，上滑仍保留系统原有导航功能**。v0.4.0 新增小白条缩放动画及可调震动。
 
 已在一加 15（PLK110）、Android 17 / API 37、Vector Framework 2.2 / Xposed API 102 上测试。
 
@@ -11,6 +11,8 @@
 - 触摸区域以 SystemUI 当前导航栏布局及可见 NavigationHandle 为准，跟随屏幕旋转，不硬编码触控芯片的竖屏坐标。
 - v0.3 的 0–380ms 短按、移动不超过 22dp 时通过 InputManagerGlobal 注入 BACK；取消了对极短点击的过滤。SystemUI 已具备 INJECT_EVENTS 权限。
 - 滑动、多指、长按不触发返回；导航栏的上滑仍由系统的 gesture monitor 处理。
+- 可设置小白条轻点时的缩放比例（50%～150%，每档 5%）、缩放总时长（80～500ms，每档 20ms），点击确认后先缩放再恢复。100% 相当于没有缩放幅度。
+- 支持振动强度 0（关闭）及 1～10 级（10 档不同振幅），并提供“试听当前震动”按钮。硬件支持振幅控制时使用单次 VibrationEffect 自定义振幅，成功轻触时才触发。参数在 Xposed 的 SystemUI 进程通过 Settings.Global 观察并动态更新，不需要重启。
 - 有“启用轻触返回”和“显示常驻状态通知”两个独立开关。关闭通知不会停止手势功能，无后台 getevent 进程，也不需要前台 Service。
 - 开关通过 root 写入 Settings.Global.mback_xposed_enabled，SystemUI 监听变更动态更新触摸区域；设置值在触摸回调之外缓存，降低每次触摸的开销。
 
@@ -40,7 +42,16 @@ adb shell su -c '/data/adb/lspd/cli modules enable dev.mback.oneplus'
 adb shell su -c '/data/adb/lspd/cli scope add dev.mback.oneplus com.android.systemui/0'
 ```
 
-## 回归测试（2026-10-24）
+## v0.4.0 反馈参数与真机验证（2026-10-24）
+
+- 默认缩放比例 75%，总时长 220ms，振动强度 5 级；调节后立即生效，可切换至 100% 或 0 级关闭相应效果。
+- 一加 15 / Android 17：Xposed 成功加载 `v0.4-touch-feedback`，确认真实手柄类 `com.oplus.systemui.navigationbar.gesture.sidegesture.OplusNavigationHandle`（357×131）。
+- 点击测试页小白条返回成功，SystemUI 触发动画和震动；横屏轻触返回成功，竖屏上滑仍回桌面。
+- 使用 `dumpsys vibrator_manager` 核验：1 级和 10 级的触觉反馈确有差异，ROM 记录的强度约为 800 和 2334（ColorOS 内部标度，并非 Android 振幅值）。
+- 通过界面拖动缩放滑块后，`Settings.Global.mback_scale_percent` 实际从 75 变成 110；设备已恢复默认 75% / 220ms / 5 级。
+- 纯 Java 测试命令：`javac -d app/build/local/tests app/src/main/java/dev/mback/oneplus/FeedbackConfig.java tests/dev/mback/oneplus/FeedbackConfigTest.java && java -cp app/build/local/tests dev.mback.oneplus.FeedbackConfigTest`。
+
+## 早期版本回归测试（2026-10-24）
 
 v0.2 复现：竖屏屏幕 1272×2772，旧触摸区域 [421,2657]—[849,2753]。在测试页点击 (635,2760)，底部按钮计数从 0 增为 1，没有返回。
 
