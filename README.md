@@ -1,6 +1,6 @@
 # MBack · Xposed (OnePlus 15 / ColorOS)
 
-在 ColorOS 手势导航的小白条上模拟魅族 mBack：**轻点返回，上滑仍保留系统原有导航功能**。v0.4.0 新增小白条缩放动画及可调震动。
+在 ColorOS 手势导航的小白条上模拟魅族 mBack：**轻点返回，上滑仍保留系统原有导航功能**。v0.4.0 新增小白条缩放动画及可调震动，v0.4.1 修复缩放轴心偏下问题。
 
 已在一加 15（PLK110）、Android 17 / API 37、Vector Framework 2.2 / Xposed API 102 上测试。
 
@@ -41,6 +41,12 @@ stubs/ 下只有编译期 legacy Xposed API 的声明，脚本不会把这些 st
 adb shell su -c '/data/adb/lspd/cli modules enable dev.mback.oneplus'
 adb shell su -c '/data/adb/lspd/cli scope add dev.mback.oneplus com.android.systemui/0'
 ```
+
+## v0.4.1 缩放中心修复（2026-10-24）
+
+- 根因：ColorOS `OplusNavigationHandle.onDraw()` 把可见白条绘制在 View 靠下的位置：`bottom = viewHeight - mHandleBottom`，`top = bottom - (mHeight + mAdditionalHeightForAnimation * longPressAnimProgress)`。旧版以整个 131px 高 View 的中心为 pivot，使缩放时小白条上下偏移。
+- 新版使用真实绘制矩形的纵向中心作为缩放 pivotY；水平中心继续使用宽度一半。这让 50%～150% 的缩放围绕可见白条中心进行，兼容 ColorOS 原有长按效果对绘制高度的改变。
+- 对应数学验证：`PillGeometryTest`；保持 v0.3 的 Xposed 可触区域与 10 级振幅设置不变。
 
 ## v0.4.0 反馈参数与真机验证（2026-10-24）
 

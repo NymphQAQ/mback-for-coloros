@@ -80,7 +80,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                 if (param.thisObject instanceof ViewGroup) detach((ViewGroup) param.thisObject);
             }
         });
-        XposedBridge.log(TAG + " v0.4-touch-feedback registered: " + cls.getName()
+        XposedBridge.log(TAG + " v0.4.1-visual-pivot registered: " + cls.getName()
                 + " dispatch=" + dispatchOwner.getName());
     }
 
@@ -113,6 +113,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
         private int vibrationLevel = FeedbackConfig.DEFAULT_VIBRATION;
         private View animatedHandle;
         private boolean handleLogged;
+        private boolean pivotLogged;
         private final Rect hitRect = new Rect();
         private boolean pressed;
         private boolean moved;
@@ -227,7 +228,10 @@ public final class MBackHook implements IXposedHookLoadPackage {
             animatedHandle = handle;
             handle.animate().cancel();
             handle.setPivotX(handle.getWidth() * .5f);
-            handle.setPivotY(handle.getHeight() * .5f);
+            // OplusNavigationHandle draws its pill near the BOTTOM of a much
+            // taller View. Its actual drawn bounds come from onDraw(), so a
+            // view-height/2 pivot visibly pushes the bar downward when scaled.
+            handle.setPivotY(readVisualPillPivotY(handle));
             handle.setScaleX(1f);
             handle.setScaleY(1f);
             final float targetScale = scalePercent / 100f;
@@ -242,6 +246,38 @@ public final class MBackHook implements IXposedHookLoadPackage {
                             .setInterpolator(new AccelerateDecelerateInterpolator())
                             .start())
                     .start();
+        }
+
+        private float readVisualPillPivotY(View handle) {
+            try {
+                Class<?> cls = handle.getClass();
+                // Real ColorOS OplusNavigationHandle.onDraw geometry:
+                // f = mHeight + mAdditionalHeightForAnimation * longPressAnimProgress;
+                // bottom = getHeight() - mHandleBottom; top = bottom - f.
+                float bottomInset = cls.getField("mHandleBottom").getInt(handle);
+                float barHeight = cls.getField("mHeight").getInt(handle);
+                float extraHeight = cls.getField("mAdditionalHeightForAnimation").getFloat(handle);
+                float progress = cls.getField("longPressAnimProgress").getFloat(handle);
+                float pivot = PillGeometry.visualCenterY(handle.getHeight(), bottomInset,
+                        barHeight, extraHeight, progress);
+                if (Float.isNaN(pivot) || Float.isInfinite(pivot)
+                        || pivot < 0f || pivot > handle.getHeight()) {
+                    throw new IllegalStateException("invalid pill pivot=" + pivot);
+                }
+                if (!pivotLogged) {
+                    XposedBridge.log(TAG + " handle visual pivotY=" + pivot +
+                            " vs view center=" + (handle.getHeight() * .5f) +
+                            " pillHeight=" + barHeight + " bottomInset=" + bottomInset);
+                    pivotLogged = true;
+                }
+                return pivot;
+            } catch (Throwable error) {
+                if (!pivotLogged) {
+                    XposedBridge.log(TAG + " visual pivot fallback: " + error);
+                    pivotLogged = true;
+                }
+                return handle.getHeight() * .5f;
+            }
         }
 
         private void playVibration() {
