@@ -27,6 +27,10 @@ public final class MainActivity extends Activity {
     private Switch enabledSwitch;
     private Switch notificationSwitch;
     private Switch cornerSwitch;
+    private Switch originalIconSwitch;
+    private SeekBar arcRadiusSlider;
+    private SeekBar arcIconSlider;
+    private SeekBar arcSpacingSlider;
     private SeekBar scaleSlider;
     private SeekBar durationSlider;
     private SeekBar vibrationSlider;
@@ -92,7 +96,30 @@ public final class MainActivity extends Activity {
         layout.addView(chooseApps);
         chooseApps.setOnClickListener(v ->
                 startActivity(new Intent(this, MoreAppsActivity.class)));
-        layout.addView(text("从左下角或右下角向屏幕中央斜滑，保持手指接触以选择。松手时快捷栏立即消失：选择应用会打开原生小窗，选择蓝色“更多”会进入应用管理，空白处松手则取消。", 13));
+        layout.addView(text("从左右下角沿圆弧方向滑动。最多 6 个应用，圆弧最下方是蓝色“更多”。松手立即关闭菜单，并按当前选中图标执行操作。", 13));
+        layout.addView(section("圆弧与图标"));
+        arcRadiusSlider = addSlider(layout, "圆弧半径", "屏幕宽度的百分比；越小弯曲越明显",
+                ArcConfig.RADIUS_KEY, ArcConfig.RADIUS_MIN,
+                ArcConfig.RADIUS_MAX, ArcConfig.RADIUS_STEP,
+                ArcConfig.DEFAULT_RADIUS, "%",
+                value -> {});
+        arcIconSlider = addSlider(layout, "图标大小", "应用图标和“更多”图标同步改变",
+                ArcConfig.ICON_SIZE_KEY, ArcConfig.ICON_MIN,
+                ArcConfig.ICON_MAX, ArcConfig.ICON_STEP,
+                ArcConfig.DEFAULT_ICON, " dp",
+                value -> {});
+        arcSpacingSlider = addSlider(layout, "图标间距", "沿圆弧的相邻图标边缘距离；空间不足时自动收紧",
+                ArcConfig.SPACING_KEY, ArcConfig.SPACING_MIN,
+                ArcConfig.SPACING_MAX, ArcConfig.SPACING_STEP,
+                ArcConfig.DEFAULT_SPACING, " dp",
+                value -> {});
+        originalIconSwitch = new Switch(this);
+        originalIconSwitch.setText("使用原始图标形状（关闭则裁剪为圆形）");
+        layout.addView(originalIconSwitch);
+        originalIconSwitch.setOnCheckedChangeListener((button, checked) -> {
+            if (!switching) writeGlobal(ArcConfig.ORIGINAL_ICON_KEY,
+                    checked ? 1 : 0, "图标形状");
+        });
 
         layout.addView(section("其他"));
         notificationSwitch = new Switch(this);
@@ -164,6 +191,9 @@ public final class MainActivity extends Activity {
         enabledSwitch.setChecked(enabled);
         if (cornerSwitch != null) {
             cornerSwitch.setChecked(readGlobal(CornerAppMenu.ENABLE_KEY, 0) == 1);
+        }
+        if (originalIconSwitch != null) {
+            originalIconSwitch.setChecked(readGlobal(ArcConfig.ORIGINAL_ICON_KEY, 0) == 1);
         }
         switching = false;
         status.setText(enabled ? "轻触返回已开启 · 调节设置后立即生效"
@@ -275,6 +305,21 @@ public final class MainActivity extends Activity {
         if (vibrationSlider != null) {
             vibrationSlider.setProgress(FeedbackConfig.vibration(readGlobal(
                     FeedbackConfig.VIBRATION_KEY, FeedbackConfig.DEFAULT_VIBRATION)));
+        }
+        if (arcRadiusSlider != null) {
+            arcRadiusSlider.setProgress((ArcConfig.radius(readGlobal(
+                    ArcConfig.RADIUS_KEY, ArcConfig.DEFAULT_RADIUS)) - ArcConfig.RADIUS_MIN)
+                    / ArcConfig.RADIUS_STEP);
+        }
+        if (arcIconSlider != null) {
+            arcIconSlider.setProgress((ArcConfig.icon(readGlobal(
+                    ArcConfig.ICON_SIZE_KEY, ArcConfig.DEFAULT_ICON)) - ArcConfig.ICON_MIN)
+                    / ArcConfig.ICON_STEP);
+        }
+        if (arcSpacingSlider != null) {
+            arcSpacingSlider.setProgress((ArcConfig.spacing(readGlobal(
+                    ArcConfig.SPACING_KEY, ArcConfig.DEFAULT_SPACING)) - ArcConfig.SPACING_MIN)
+                    / ArcConfig.SPACING_STEP);
         }
         StatusNotification.sync(this);
     }

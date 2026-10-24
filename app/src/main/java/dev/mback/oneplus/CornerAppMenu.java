@@ -48,6 +48,26 @@ final class CornerAppMenu {
     private volatile String loadingCsv;
     private RowView view;
 
+    private int radiusPercent() {
+        return ArcConfig.radius(Settings.Global.getInt(context.getContentResolver(),
+                ArcConfig.RADIUS_KEY, ArcConfig.DEFAULT_RADIUS));
+    }
+
+    private int iconSizeDp() {
+        return ArcConfig.icon(Settings.Global.getInt(context.getContentResolver(),
+                ArcConfig.ICON_SIZE_KEY, ArcConfig.DEFAULT_ICON));
+    }
+
+    private int spacingDp() {
+        return ArcConfig.spacing(Settings.Global.getInt(context.getContentResolver(),
+                ArcConfig.SPACING_KEY, ArcConfig.DEFAULT_SPACING));
+    }
+
+    private boolean useOriginalIcons() {
+        return Settings.Global.getInt(context.getContentResolver(),
+                ArcConfig.ORIGINAL_ICON_KEY, 0) == 1;
+    }
+
     CornerAppMenu(Context context) {
         this.context = context;
         this.windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
@@ -68,7 +88,7 @@ final class CornerAppMenu {
                     cachedApps = Collections.unmodifiableList(prepared);
                     cachedCsv = requested;
                     loadingCsv = null;
-                    XposedBridge.log(TAG + " cached circular icons=" + prepared.size());
+                    XposedBridge.log(TAG + " cached circle and original icons=" + prepared.size());
                 }
             });
         }, "mback-icon-cache").start();
@@ -82,11 +102,16 @@ final class CornerAppMenu {
         if (context.getResources().getConfiguration().orientation
                 != android.content.res.Configuration.ORIENTATION_PORTRAIT) return;
         try {
-            RowView next = new RowView(context, side, cachedApps);
+            int radius = radiusPercent();
+            int icon = iconSizeDp();
+            int spacing = spacingDp();
+            RowView next = new RowView(context, side, cachedApps,
+                    radius, icon, spacing, useOriginalIcons());
             android.graphics.Point size = new android.graphics.Point();
             windowManager.getDefaultDisplay().getRealSize(size);
-            // 0.745w for top icon plus headroom. Avoid a fullscreen overlay.
-            int overlayHeight = Math.min(size.y, Math.round(size.x * .87f));
+            // Make the overlay tall enough for the largest allowed circular arc.
+            // Still keep it limited to the lower part of the physical display.
+            int overlayHeight = Math.min(size.y, Math.round(size.x * .97f));
             WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
                     overlayHeight,
@@ -104,8 +129,9 @@ final class CornerAppMenu {
             windowManager.addView(next, lp);
             view = next;
             next.enter();
-            XposedBridge.log(TAG + " gesture-only diagonal shown side=" + side
-                    + " apps=" + cachedApps.size());
+            XposedBridge.log(TAG + " circular arc shown side=" + side
+                    + " radius=" + radius + "% icon=" + icon + "dp gap=" + spacing
+                    + "dp original=" + useOriginalIcons() + " apps=" + cachedApps.size());
         } catch (Throwable error) {
             XposedBridge.log(TAG + " show failed: " + error);
             hide();
@@ -168,8 +194,10 @@ final class CornerAppMenu {
             for (AppItem app : result) if (pkg.equals(app.packageName)) alreadyAdded = true;
             if (alreadyAdded) continue;
             try {
-                Bitmap bitmap = createCircularIcon(pm.getApplicationIcon(pkg));
-                result.add(new AppItem(pkg, bitmap));
+                Drawable drawable = pm.getApplicationIcon(pkg);
+                Bitmap original = rasterizeOriginal(drawable);
+                Bitmap circle = createCircularIcon(drawable);
+                result.add(new AppItem(pkg, circle, original));
             } catch (Throwable error) {
                 XposedBridge.log(TAG + " cannot rasterize " + pkg + ": " + error);
             }
@@ -178,9 +206,19 @@ final class CornerAppMenu {
         return result;
     }
 
-    /** Direct circular clipping, NO white disk, inset, or inner white ring. */
+    private Bitmap rasterizeOriginal(Drawable icon) {
+        int size = Math.round(ArcConfig.ICON_MAX
+                * context.getResources().getDisplayMetrics().density);
+        Bitmap original = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        icon.setBounds(0, 0, size, size);
+        icon.draw(new Canvas(original));
+        return original;
+    }
+
+    /** Direct circular clipping, no artificial white backdrop or outline. */
     private Bitmap createCircularIcon(Drawable icon) {
-        int size = Math.round(44f * context.getResources().getDisplayMetrics().density);
+        int size = Math.round(ArcConfig.ICON_MAX
+                * context.getResources().getDisplayMetrics().density);
         Bitmap source = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
         Canvas sourceCanvas = new Canvas(source);
         // Draw the actual artwork larger than its safe-area padding. Crop
@@ -200,10 +238,12 @@ final class CornerAppMenu {
 
     private static final class AppItem {
         final String packageName;
-        final Bitmap bitmap;
-        AppItem(String packageName, Bitmap bitmap) {
+        final Bitmap circle;
+        final Bitmap original;
+        AppItem(String packageName, Bitmap circle, Bitmap original) {
             this.packageName = packageName;
-            this.bitmap = bitmap;
+            this.circle = circle;
+            this.original = original;
         }
     }
 
@@ -213,17 +253,29 @@ final class CornerAppMenu {
         private final Paint iconPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         private final Paint morePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final float density;
+        private final int radiusPercent;
+        private final int iconSizeDp;
+        private final int spacingDp;
+        private final boolean originalIcons;
         private final int[] windowPosition = new int[2];
+        private final float[] arcX = new float[FlymeArcGeometry.MAX_POSITIONS];
+        private final float[] arcY = new float[FlymeArcGeometry.MAX_POSITIONS];
+        private int measuredWidth = -1, measuredHeight = -1;
         private ValueAnimator animation;
         private float reveal;
         private int hovered = -1;
 
-        RowView(Context ctx, int side, List<AppItem> apps) {
+        RowView(Context ctx, int side, List<AppItem> apps, int radius,
+                int icon, int spacing, boolean original) {
             super(ctx);
             this.side = side;
             this.apps = apps;
             density = ctx.getResources().getDisplayMetrics().density;
-            setContentDescription("Flyme 七位置斜列小窗菜单");
+            radiusPercent = radius;
+            iconSizeDp = icon;
+            spacingDp = spacing;
+            originalIcons = original;
+            setContentDescription("Flyme 可调圆弧小窗菜单");
         }
 
         private float dp(float value) { return value * density; }
@@ -243,11 +295,36 @@ final class CornerAppMenu {
             if (animation != null) animation.cancel();
         }
 
+        private void ensureArcPoints() {
+            int width = getWidth(), height = getHeight();
+            if (width == measuredWidth && height == measuredHeight) return;
+            measuredWidth = width;
+            measuredHeight = height;
+            int count = FlymeArcGeometry.visiblePositions(apps.size());
+            for (int pos = 0; pos < count; pos++) {
+                arcX[pos] = FlymeArcGeometry.x(side, pos, width, density,
+                        radiusPercent, iconSizeDp, spacingDp, count);
+                arcY[pos] = FlymeArcGeometry.y(pos, width, height, density,
+                        radiusPercent, iconSizeDp, spacingDp, count);
+            }
+        }
+
         int hit(float rawX, float rawY) {
+            ensureArcPoints();
             getLocationOnScreen(windowPosition);
-            return FlymeArcGeometry.hit(rawX - windowPosition[0],
-                    rawY - windowPosition[1], side, getWidth(), getHeight(),
-                    FlymeArcGeometry.visiblePositions(apps.size()), dp(30f));
+            float x = rawX - windowPosition[0], y = rawY - windowPosition[1];
+            float radius = dp(iconSizeDp * .5f + 8f);
+            float closest = radius * radius;
+            int selected = -1;
+            for (int i = 0; i < FlymeArcGeometry.visiblePositions(apps.size()); i++) {
+                float dx = x - arcX[i], dy = y - arcY[i];
+                float distance = dx * dx + dy * dy;
+                if (distance <= closest) {
+                    closest = distance;
+                    selected = i;
+                }
+            }
+            return selected;
         }
 
         void select(float rawX, float rawY) {
@@ -263,17 +340,17 @@ final class CornerAppMenu {
             float width = getWidth();
             float height = getHeight();
             if (width <= 0 || height <= 0) return;
-
+            ensureArcPoints();
             final int count = FlymeArcGeometry.visiblePositions(apps.size());
-            // Paint ascending app row, with More as the lowest stop.
+            // All stops lie on one actual circle, rather than a straight line.
             for (int pos = 0; pos < count; pos++) {
                 float delay = pos * .037f;
                 float step = Math.max(0f, Math.min(1f, (reveal - delay) / (1f - delay)));
                 if (step <= 0) continue;
-                float x = FlymeArcGeometry.x(side, pos, width);
-                float y = FlymeArcGeometry.y(pos, width, height)
-                        + (1f - step) * dp(9f);
-                float scale = (.84f + .16f * step) * (hovered == pos ? 1.13f : 1f);
+                float x = arcX[pos];
+                float y = arcY[pos] + (1f - step) * dp(9f);
+                float scale = (.84f + .16f * step) * (hovered == pos ? 1.13f : 1f)
+                        * iconSizeDp / (float) ArcConfig.ICON_MAX;
                 int alpha = Math.round(255f * step);
 
                 canvas.save();
@@ -282,7 +359,8 @@ final class CornerAppMenu {
                 if (pos == 0) {
                     drawMore(canvas, alpha);
                 } else {
-                    Bitmap icon = apps.get(pos - 1).bitmap;
+                    AppItem item = apps.get(pos - 1);
+                    Bitmap icon = originalIcons ? item.original : item.circle;
                     iconPaint.setAlpha(alpha);
                     canvas.drawBitmap(icon, -icon.getWidth() * .5f,
                             -icon.getHeight() * .5f, iconPaint);
@@ -294,11 +372,11 @@ final class CornerAppMenu {
         private void drawMore(Canvas canvas, int alpha) {
             morePaint.setColor(0xFF2189FE);
             morePaint.setAlpha(alpha);
-            canvas.drawCircle(0f, 0f, dp(22f), morePaint);
+            canvas.drawCircle(0f, 0f, dp(ArcConfig.ICON_MAX * .5f), morePaint);
             morePaint.setColor(Color.WHITE);
             morePaint.setAlpha(alpha);
             for (int i = -1; i <= 1; i++)
-                canvas.drawCircle(dp(6.4f * i), 0f, dp(2.35f), morePaint);
+                canvas.drawCircle(dp(9.3f * i), 0f, dp(3.4f), morePaint);
         }
     }
 }

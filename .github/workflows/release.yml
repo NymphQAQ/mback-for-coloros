@@ -47,6 +47,7 @@ jobs:
           javac -d app/build/local/tests \
             app/src/main/java/dev/mback/oneplus/CornerGesture.java \
             tests/dev/mback/oneplus/CornerGestureTest.java \
+            app/src/main/java/dev/mback/oneplus/ArcConfig.java \
             app/src/main/java/dev/mback/oneplus/FlymeArcGeometry.java \
             tests/dev/mback/oneplus/FlymeArcGeometryTest.java \
             app/src/main/java/dev/mback/oneplus/HitZone.java \

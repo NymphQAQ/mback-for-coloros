@@ -85,7 +85,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                 if (param.thisObject instanceof ViewGroup) detach((ViewGroup) param.thisObject);
             }
         });
-        XposedBridge.log(TAG + " v0.6.6-gesture-only-seven-icons registered: " + cls.getName()
+        XposedBridge.log(TAG + " v0.6.7-adjustable-true-arc registered: " + cls.getName()
                 + " dispatch=" + dispatchOwner.getName());
     }
 
