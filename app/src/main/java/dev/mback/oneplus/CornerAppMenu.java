@@ -2,25 +2,28 @@ package dev.mback.oneplus;
 
 import android.animation.ValueAnimator;
 import android.content.Context;
-import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.BitmapShader;
+import android.graphics.Path;
 import android.graphics.PixelFormat;
-import android.graphics.Shader;
 import android.os.SystemClock;
-import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.AdaptiveIconDrawable;
+import android.graphics.drawable.ColorDrawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.KeyEvent;
+import android.widget.Button;
+import android.widget.FrameLayout;
 import android.view.View;
 import android.view.WindowManager;
+import android.view.ViewConfiguration;
 import android.view.animation.DecelerateInterpolator;
 
 import java.util.ArrayList;
@@ -29,17 +32,11 @@ import java.util.List;
 
 import de.robv.android.xposed.XposedBridge;
 
-/**
- * Flyme-style gesture-only diagonal row.
- * Seven positions maximum, with "More" fixed in the LOWEST position.
- * This view NEVER takes touches and is always removed at UP/CANCEL.
- * Application icons are pre-rasterized off the SystemUI UI thread.
- */
+/** Three corner arcs with a gesture phase and an optional retained phase. */
 final class CornerAppMenu {
     static final String ENABLE_KEY = "mback_corner_menu_enabled";
+    static final int DEFAULT_ENABLED = 1;
     static final String APPS_KEY = "mback_corner_menu_apps";
-    static final String DEFAULT_APPS =
-            "com.tencent.mm,com.coloros.calculator,com.coloros.calendar,com.coloros.filemanager,com.android.settings,com.netease.cloudmusic";
     private static final String TAG = "[MBack-Corner]";
 
     private final Context context;
@@ -50,6 +47,10 @@ final class CornerAppMenu {
     private volatile String cachedCsv;
     private volatile String loadingCsv;
     private RowView view;
+    private ExtraApps cachedExtra = new ExtraApps(Collections.emptyList(), Collections.emptyList());
+    private boolean refreshingExtra;
+    private final android.util.LruCache<String, AppItem> extraIcons = new android.util.LruCache<>(40);
+    private Bitmap placeholderCircle, placeholderOriginal;
 
     private int radiusPercent() {
         return ArcConfig.radius(Settings.Global.getInt(context.getContentResolver(),
@@ -74,8 +75,10 @@ final class CornerAppMenu {
     }
 
     void prepare() {
-        String csv = Settings.Global.getString(context.getContentResolver(), APPS_KEY);
-        if (csv == null || csv.isEmpty()) csv = DEFAULT_APPS;
+        android.os.UserManager users = context.getSystemService(android.os.UserManager.class);
+        if (users != null && !users.isUserUnlocked()) return;
+        refreshExtraApps();
+        String csv = ShortcutStore.snapshot(context);
         if (csv.equals(cachedCsv) || csv.equals(loadingCsv)) return;
         final String requested = csv;
         loadingCsv = requested;
@@ -93,28 +96,31 @@ final class CornerAppMenu {
     }
 
     boolean isOpened() { return view != null; }
-    boolean isGestureActive() { return view != null; }
+    boolean isGestureActive() { return view != null && !view.latched; }
+    boolean isLatched() { return view != null && view.latched; }
 
-    void showForGesture(int side) {
+    void showForGesture(int side, IconFlight trail) {
         hide();
         if (context.getResources().getConfiguration().orientation
                 != android.content.res.Configuration.ORIENTATION_PORTRAIT) return;
         try {
             int radius = radiusPercent();
             int icon = iconSizeDp();
+            int sideMargin = ArcConfig.margin(Settings.Global.getInt(context.getContentResolver(),
+                    ArcConfig.SIDE_MARGIN_KEY, ArcConfig.DEFAULT_SIDE_MARGIN));
+            int bottomMargin = ArcConfig.margin(Settings.Global.getInt(context.getContentResolver(),
+                    ArcConfig.BOTTOM_MARGIN_KEY, ArcConfig.DEFAULT_BOTTOM_MARGIN));
             int vibration = ArcConfig.hoverVibration(Settings.Global.getInt(
                     context.getContentResolver(), ArcConfig.HOVER_VIBRATION_KEY,
                     ArcConfig.DEFAULT_HOVER_VIBRATION));
+            // shortcut: a slow refresh appears on the next gesture; use task-stack callbacks if fresher ordering is needed.
+            ExtraApps extra = cachedExtra;
             RowView next = new RowView(context, side, cachedApps,
-                    radius, icon, useOriginalIcons(), vibration);
-            android.graphics.Point size = new android.graphics.Point();
-            windowManager.getDefaultDisplay().getRealSize(size);
-            // Make the overlay tall enough for the largest allowed circular arc.
-            // Still keep it limited to the lower part of the physical display.
-            int overlayHeight = Math.min(size.y, Math.round(size.x * .97f));
+                    visibleRingApps(RingConfig.OUTER, extra.outer), visibleRingApps(RingConfig.INNER, extra.inner),
+                    radius, icon, useOriginalIcons(), vibration, sideMargin, bottomMargin, trail);
             WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
-                    overlayHeight,
+                    WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                             | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
@@ -125,6 +131,7 @@ final class CornerAppMenu {
             lp.gravity = Gravity.LEFT | Gravity.BOTTOM;
             lp.setFitInsetsTypes(0);
             lp.setFitInsetsSides(0);
+            lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
             lp.setTitle("MBack Flyme Shortcut");
             windowManager.addView(next, lp);
             view = next;
@@ -140,34 +147,56 @@ final class CornerAppMenu {
 
     void highlightBySwipe(float rawX, float rawY) {
         RowView showing = view;
-        if (showing != null) showing.select(rawX, rawY);
+        if (showing == null) return;
+        showing.select(rawX, rawY);
     }
 
     /** Called exactly once for the matching finger UP, even over empty space. */
-    void finishGesture(float rawX, float rawY) {
+    void finishGesture(float rawX, float rawY, long releasedAt) {
+        RowView showing = view;
+        if (showing == null || showing.latched) return;
+        if (showing.getWidth() == 0) {
+            showing.postOnAnimation(() -> { if (view == showing) finishGesture(rawX, rawY, releasedAt); });
+            return;
+        }
+        int position = showing.hit(rawX, rawY);
+        if (position >= 0) {
+            openPosition(position);
+            return;
+        }
+        boolean keepOpen = Settings.Global.getInt(context.getContentResolver(),
+                CornerPreferences.KEEP_OPEN_KEY, 0) == 1;
+        if (keepOpen) {
+            try {
+                showing.latch(releasedAt);
+                WindowManager.LayoutParams lp = (WindowManager.LayoutParams) showing.getLayoutParams();
+                lp.flags &= ~(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE);
+                windowManager.updateViewLayout(showing, lp);
+                showing.setFocusableInTouchMode(true);
+                showing.requestFocus();
+            } catch (Throwable error) {
+                XposedBridge.log(TAG + " cannot keep menu open: " + error);
+                hide();
+            }
+            return;
+        }
+        hide();
+    }
+
+    private void openPosition(int position) {
         RowView showing = view;
         if (showing == null) return;
-        int position = showing.hit(rawX, rawY);
-        AppItem selected = position > 0 && position <= showing.apps.size()
-                ? showing.apps.get(position - 1) : null;
+        AppItem selected = position > 0 && position < showing.positionCount() ? showing.appAt(position) : null;
         boolean more = position == FlymeArcGeometry.MORE_POSITION;
         // Release the window BEFORE starting any activity to prevent overlays
         // from sitting on top of native ColorOS window transitions.
         hide();
         if (selected != null) {
-            launcher.open(selected.packageName);
-            XposedBridge.log(TAG + " released on shortcut " + selected.packageName);
+            launcher.open(selected.target);
+            XposedBridge.log(TAG + " opened shortcut " + selected.target.id());
         } else if (more) {
-            try {
-                Intent intent = new Intent();
-                intent.setClassName("dev.mback.oneplus",
-                        "dev.mback.oneplus.MoreAppsActivity");
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                context.startActivity(intent);
-                XposedBridge.log(TAG + " released on More -> app management");
-            } catch (Throwable error) {
-                XposedBridge.log(TAG + " cannot open app management: " + error);
-            }
+            FreeformLauncher.openMore(context);
         } else {
             XposedBridge.log(TAG + " released on empty space; row dismissed");
         }
@@ -185,24 +214,93 @@ final class CornerAppMenu {
 
     private List<AppItem> loadApps(String csv) {
         ArrayList<AppItem> result = new ArrayList<>();
-        PackageManager pm = context.getPackageManager();
-        for (String item : csv.split(",")) {
-            String pkg = CornerGesture.sanitize(item.trim());
-            if (pkg == null || "none".equals(pkg)
-                    || pm.getLaunchIntentForPackage(pkg) == null) continue;
-            boolean alreadyAdded = false;
-            for (AppItem app : result) if (pkg.equals(app.packageName)) alreadyAdded = true;
-            if (alreadyAdded) continue;
+        for (ShortcutStore.Item item : ShortcutStore.decode(csv)) {
             try {
-                Drawable drawable = pm.getApplicationIcon(pkg);
-                Bitmap original = rasterizeOriginal(drawable);
-                Bitmap circle = createCircularIcon(drawable);
-                result.add(new AppItem(pkg, circle, original));
+                result.add(loadApp(item));
             } catch (Throwable error) {
-                XposedBridge.log(TAG + " cannot rasterize " + pkg + ": " + error);
+                XposedBridge.log(TAG + " cannot rasterize " + item.target.id() + ": " + error);
             }
             if (result.size() == FlymeArcGeometry.MAX_APPS) break;
         }
+        return result;
+    }
+
+    private AppItem loadApp(ShortcutStore.Item item) throws Exception {
+        Bitmap original = rasterizeOriginal(ShortcutIcons.load(context, item, true));
+        Bitmap circle = rasterizeOriginal(ShortcutIcons.load(context, item, false));
+        return new AppItem(item.target, ShortcutStore.label(context, item), circle, original);
+    }
+
+    private static final class ExtraApps {
+        final List<AppItem> outer, inner;
+        ExtraApps(List<AppItem> outer, List<AppItem> inner) { this.outer = outer; this.inner = inner; }
+    }
+
+    void refreshExtraApps() {
+        if (refreshingExtra) return;
+        refreshingExtra = true;
+        new Thread(() -> {
+            try {
+                ExtraApps prepared = resolveExtraApps();
+                main.post(() -> { cachedExtra = prepared; refreshingExtra = false; });
+            } catch (Throwable error) {
+                XposedBridge.log(TAG + " ring refresh failed: " + error);
+                main.post(() -> refreshingExtra = false);
+            }
+        }, "mback-recent-cache").start();
+    }
+
+    private List<AppItem> visibleRingApps(RingConfig ring, List<AppItem> apps) {
+        return ring.enabled(context) ? apps.subList(0, Math.min(apps.size(), ring.count(context)))
+                : Collections.emptyList();
+    }
+
+    private ExtraApps resolveExtraApps() {
+        java.util.HashSet<String> reserved = new java.util.HashSet<>();
+        List<ShortcutStore.Item> outer = RingConfig.OUTER.items(context, reserved);
+        if (RingConfig.OUTER.recent(context) && RingConfig.INNER.recent(context))
+            for (ShortcutStore.Item item : outer) reserved.add(item.target.id());
+        List<ShortcutStore.Item> inner = RingConfig.INNER.items(context, reserved);
+        return new ExtraApps(resolveRingApps(outer), resolveRingApps(inner));
+    }
+
+    private List<AppItem> resolveRingApps(List<ShortcutStore.Item> sources) {
+        ArrayList<AppItem> result = new ArrayList<>(), waiting = new ArrayList<>();
+        ArrayList<ShortcutStore.Item> missing = new ArrayList<>();
+        ArrayList<String> keys = new ArrayList<>();
+        for (ShortcutStore.Item source : sources) {
+            String key = source.target.id() + ":" + source.icon;
+            AppItem item = extraIcons.get(key);
+            if (item == null) {
+                if (placeholderOriginal == null) {
+                    Drawable fallback = context.getPackageManager().getDefaultActivityIcon();
+                    placeholderOriginal = rasterizeOriginal(fallback);
+                    placeholderCircle = rasterizeOriginal(new android.graphics.drawable.BitmapDrawable(
+                            context.getResources(), IconRenderer.circle(fallback)));
+                }
+                item = new AppItem(source.target, ShortcutStore.label(context, source), placeholderCircle, placeholderOriginal);
+                extraIcons.put(key, item);
+                missing.add(source); waiting.add(item); keys.add(key);
+            }
+            result.add(item);
+        }
+        if (!missing.isEmpty()) new Thread(() -> {
+            for (int i = 0; i < missing.size(); i++) {
+                AppItem item = waiting.get(i);
+                String key = keys.get(i);
+                try {
+                    AppItem loaded = loadApp(missing.get(i));
+                    main.post(() -> {
+                        item.circle = loaded.circle;
+                        item.original = loaded.original;
+                        if (view != null) view.invalidate();
+                    });
+                } catch (Throwable error) {
+                    XposedBridge.log(TAG + " ring icon unavailable: " + error);
+                    main.post(() -> { if (extraIcons.get(key) == item) extraIcons.remove(key); });
+                }
+            }
+        }, "mback-ring-icons").start();
         return result;
     }
 
@@ -215,77 +313,88 @@ final class CornerAppMenu {
         return original;
     }
 
-    /** Direct circular clipping, no artificial white backdrop or outline. */
-    private Bitmap createCircularIcon(Drawable icon) {
-        int size = Math.round(ArcConfig.ICON_MAX
-                * context.getResources().getDisplayMetrics().density);
-        Bitmap source = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
-        Canvas sourceCanvas = new Canvas(source);
-        // Draw the actual artwork larger than its safe-area padding. Crop
-        // square app backgrounds rather than shrinking them inside a circle.
-        int overscan = Math.round(size * .18f);
-        icon.setBounds(-overscan, -overscan, size + overscan, size + overscan);
-        icon.draw(sourceCanvas);
-
-        Bitmap circle = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
-        Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-        fill.setShader(new BitmapShader(source, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP));
-        float center = size * .5f;
-        new Canvas(circle).drawCircle(center, center, center, fill);
-        source.recycle();
-        return circle;
-    }
-
     private static final class AppItem {
-        final String packageName;
-        final Bitmap circle;
-        final Bitmap original;
-        AppItem(String packageName, Bitmap circle, Bitmap original) {
-            this.packageName = packageName;
+        final ShortcutTarget target;
+        final String label;
+        Bitmap circle;
+        Bitmap original;
+        AppItem(ShortcutTarget target, String label, Bitmap circle, Bitmap original) {
+            this.target = target;
+            this.label = label;
             this.circle = circle;
             this.original = original;
         }
     }
 
-    private final class RowView extends View {
+    private final class RowView extends FrameLayout {
         final int side;
-        final List<AppItem> apps;
+        final List<AppItem> apps, outerApps, innerApps;
+        private final int outerIconDp, innerIconDp;
         private final Paint iconPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         private final Paint morePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final float density;
         private final int radiusPercent;
         private final int iconSizeDp;
+        private final int sideMarginDp, bottomMarginDp;
         private final boolean originalIcons;
+        private final Path moreMask;
         private final int hoverVibration;
         private final Vibrator vibrator;
         private long lastHapticAt;
         private final int[] windowPosition = new int[2];
-        private final float[] arcX = new float[FlymeArcGeometry.MAX_POSITIONS];
-        private final float[] arcY = new float[FlymeArcGeometry.MAX_POSITIONS];
+        private CornerRingGeometry geometry;
         private int measuredWidth = -1, measuredHeight = -1;
         private ValueAnimator animation;
         private float reveal;
         private int hovered = -1;
+        private final IconFlight trail;
+        private final float[] flightPoint = new float[2];
+        private final int dim;
+        private final int animationDuration;
+        private boolean latched;
+        private final int touchSlop;
+        private long releasedAt, touchDownTime = -1;
+        private float touchX, touchY;
+        private boolean touchMoved;
 
-        RowView(Context ctx, int side, List<AppItem> apps, int radius,
-                int icon, boolean original, int vibration) {
+
+        RowView(Context ctx, int side, List<AppItem> apps, List<AppItem> outerApps, List<AppItem> innerApps, int radius,
+                int icon, boolean original, int vibration, int sideMargin, int bottomMargin, IconFlight trail) {
             super(ctx);
+            setWillNotDraw(false);
+            this.trail = trail;
+            dim = CornerPreferences.dim(ctx);
+            animationDuration = CornerPreferences.animationDuration(ctx);
+            touchSlop = ViewConfiguration.get(ctx).getScaledTouchSlop();
             this.side = side;
             this.apps = apps;
+            this.outerApps = outerApps;
+            this.innerApps = innerApps;
+            outerIconDp = RingConfig.OUTER.icon(ctx);
+            innerIconDp = RingConfig.INNER.icon(ctx);
             density = ctx.getResources().getDisplayMetrics().density;
             radiusPercent = radius;
             iconSizeDp = icon;
+            sideMarginDp = sideMargin;
+            bottomMarginDp = bottomMargin;
             originalIcons = original;
+            AdaptiveIconDrawable shape = new AdaptiveIconDrawable(
+                    new ColorDrawable(Color.BLUE), new ColorDrawable(Color.TRANSPARENT));
+            int maskSize = Math.round(dp(ArcConfig.ICON_MAX));
+            shape.setBounds(0, 0, maskSize, maskSize);
+            moreMask = new Path(shape.getIconMask());
+            moreMask.offset(-maskSize * .5f, -maskSize * .5f);
             hoverVibration = vibration;
             vibrator = (Vibrator) ctx.getSystemService(Context.VIBRATOR_SERVICE);
-            setContentDescription("Flyme 可调圆弧小窗菜单");
+            setContentDescription("快捷小窗，选中应用后松手打开，点击空白处关闭");
         }
 
         private float dp(float value) { return value * density; }
 
         void enter() {
+            if (animationDuration == 0) { reveal = 1f; invalidate(); return; }
             animation = ValueAnimator.ofFloat(0f, 1f);
-            animation.setDuration(190);
+            animation.setDuration(animationDuration);
             animation.setInterpolator(new DecelerateInterpolator(1.7f));
             animation.addUpdateListener(a -> {
                 reveal = (Float) a.getAnimatedValue();
@@ -298,31 +407,110 @@ final class CornerAppMenu {
             if (animation != null) animation.cancel();
         }
 
+        void latch(long releasedAt) {
+            this.releasedAt = releasedAt;
+            touchDownTime = -1;
+            stop();
+            reveal = 1f;
+            hovered = -1;
+            latched = true;
+            ensureArcPoints();
+            for (int i = 0; i < positionCount(); i++) {
+                int size = Math.round(dp(Math.max(48, geometry.icon[i] + 16)));
+                final int position = i;
+                Button target = new Button(getContext());
+                target.setBackgroundColor(Color.TRANSPARENT);
+                target.setStateListAnimator(null);
+                target.setContentDescription(i == 0 ? "更多应用" : (i >= geometry.innerStart ? "内圈，" : i >= geometry.outerStart ? "外圈，" : "中圈，") + appAt(i).label);
+                // Accessibility clicks bypass the physical touch-stream gate.
+                target.setOnClickListener(v -> {
+                    if (view == RowView.this && latched) openPosition(position);
+                });
+                FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(size, size);
+                lp.leftMargin = Math.round(geometry.x[i] - size * .5f);
+                lp.topMargin = Math.round(geometry.y[i] - size * .5f);
+                addView(target, lp);
+            }
+            invalidate();
+        }
+
+        @Override public boolean onInterceptTouchEvent(MotionEvent event) {
+            return latched || super.onInterceptTouchEvent(event);
+        }
+
+        @Override public boolean onTouchEvent(MotionEvent event) {
+            if (!latched) return false;
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN) {
+                // Ignore the original stroke when the window becomes touchable.
+                touchDownTime = event.getDownTime() > releasedAt ? event.getDownTime() : -1;
+                if (touchDownTime < 0) return true;
+                touchX = event.getRawX();
+                touchY = event.getRawY();
+                touchMoved = false;
+                select(touchX, touchY);
+                return true;
+            }
+            if (action == MotionEvent.ACTION_POINTER_DOWN) { hide(); return true; }
+            if (touchDownTime < 0 || event.getDownTime() != touchDownTime) return true;
+            if (Math.hypot(event.getRawX() - touchX, event.getRawY() - touchY) > touchSlop)
+                touchMoved = true;
+            if (action == MotionEvent.ACTION_MOVE) {
+                highlightBySwipe(event.getRawX(), event.getRawY());
+            } else if (action == MotionEvent.ACTION_UP) {
+                int position = hit(event.getRawX(), event.getRawY());
+                touchDownTime = -1;
+                hovered = -1;
+                invalidate();
+                if (position >= 0) openPosition(position);
+                else if (!touchMoved) performClick();
+            } else if (action == MotionEvent.ACTION_CANCEL) {
+                touchDownTime = -1;
+                hovered = -1;
+                invalidate();
+            }
+            return true;
+        }
+
+        @Override public boolean performClick() { super.performClick(); hide(); return true; }
+
+        @Override public boolean dispatchKeyEvent(KeyEvent event) {
+            if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+                if (event.getAction() == KeyEvent.ACTION_UP) hide();
+                return true;
+            }
+            return super.dispatchKeyEvent(event);
+        }
+
+        int positionCount() { return 1 + apps.size() + outerApps.size() + innerApps.size(); }
+
+        AppItem appAt(int position) {
+            int index = position - 1;
+            if (index < apps.size()) return apps.get(index);
+            index -= apps.size();
+            return index < outerApps.size() ? outerApps.get(index) : innerApps.get(index - outerApps.size());
+        }
+
         private void ensureArcPoints() {
             int width = getWidth(), height = getHeight();
             if (width == measuredWidth && height == measuredHeight) return;
             measuredWidth = width;
             measuredHeight = height;
-            int count = FlymeArcGeometry.visiblePositions(apps.size());
-            for (int pos = 0; pos < count; pos++) {
-                arcX[pos] = FlymeArcGeometry.x(side, pos, width, density,
-                        radiusPercent, iconSizeDp, count);
-                arcY[pos] = FlymeArcGeometry.y(pos, width, height, density,
-                        radiusPercent, iconSizeDp, count);
-            }
+            geometry = new CornerRingGeometry(side, width, height, density, radiusPercent, iconSizeDp,
+                    apps.size(), sideMarginDp, bottomMarginDp, outerApps.size(), outerIconDp, innerApps.size(), innerIconDp);
         }
 
         int hit(float rawX, float rawY) {
             ensureArcPoints();
             getLocationOnScreen(windowPosition);
             float x = rawX - windowPosition[0], y = rawY - windowPosition[1];
-            float radius = dp(iconSizeDp * .5f + 8f);
-            float closest = radius * radius;
+            float closest = Float.MAX_VALUE;
             int selected = -1;
-            for (int i = 0; i < FlymeArcGeometry.visiblePositions(apps.size()); i++) {
-                float dx = x - arcX[i], dy = y - arcY[i];
+            for (int i = 0; i < positionCount(); i++) {
+                float dx = x - geometry.x[i], dy = y - geometry.y[i];
                 float distance = dx * dx + dy * dy;
-                if (distance <= closest) {
+                float radius = dp(Math.max(24, geometry.icon[i] * .5f + 8));
+                if (distance <= radius * radius && distance <= closest) {
                     closest = distance;
                     selected = i;
                 }
@@ -342,11 +530,7 @@ final class CornerAppMenu {
                     && vibrator != null && vibrator.hasVibrator()) {
                 lastHapticAt = now;
                 try {
-                    vibrator.vibrate(VibrationEffect.createOneShot(
-                            10 + hoverVibration,
-                            vibrator.hasAmplitudeControl()
-                                    ? FeedbackConfig.vibrationAmplitude(hoverVibration)
-                                    : VibrationEffect.DEFAULT_AMPLITUDE));
+                    TouchFeedback.play(vibrator, hoverVibration);
                 } catch (Throwable error) {
                     XposedBridge.log(TAG + " icon haptic failed: " + error);
                 }
@@ -359,16 +543,19 @@ final class CornerAppMenu {
             float height = getHeight();
             if (width <= 0 || height <= 0) return;
             ensureArcPoints();
-            final int count = FlymeArcGeometry.visiblePositions(apps.size());
+            canvas.drawColor(Color.argb(Math.round(255 * dim / 100f * reveal), 0, 0, 0));
+            getLocationOnScreen(windowPosition);
+            final int count = positionCount();
             // All stops lie on one actual circle, rather than a straight line.
             for (int pos = 0; pos < count; pos++) {
                 float delay = pos * .037f;
                 float step = Math.max(0f, Math.min(1f, (reveal - delay) / (1f - delay)));
                 if (step <= 0) continue;
-                float x = arcX[pos];
-                float y = arcY[pos] + (1f - step) * dp(9f);
-                float scale = (.84f + .16f * step) * (hovered == pos ? 1.13f : 1f)
-                        * iconSizeDp / (float) ArcConfig.ICON_MAX;
+                trail.point(step, geometry.x[pos] + windowPosition[0], geometry.y[pos] + windowPosition[1], flightPoint);
+                float x = flightPoint[0] - windowPosition[0];
+                float y = flightPoint[1] - windowPosition[1];
+                float scale = (.45f + .55f * step) * (hovered == pos ? 1.13f : 1f)
+                        * geometry.icon[pos] / (float) ArcConfig.ICON_MAX;
                 int alpha = Math.round(255f * step);
 
                 canvas.save();
@@ -377,7 +564,7 @@ final class CornerAppMenu {
                 if (pos == 0) {
                     drawMore(canvas, alpha);
                 } else {
-                    AppItem item = apps.get(pos - 1);
+                    AppItem item = appAt(pos);
                     Bitmap icon = originalIcons ? item.original : item.circle;
                     iconPaint.setAlpha(alpha);
                     canvas.drawBitmap(icon, -icon.getWidth() * .5f,
@@ -390,7 +577,8 @@ final class CornerAppMenu {
         private void drawMore(Canvas canvas, int alpha) {
             morePaint.setColor(0xFF2189FE);
             morePaint.setAlpha(alpha);
-            canvas.drawCircle(0f, 0f, dp(ArcConfig.ICON_MAX * .5f), morePaint);
+            if (originalIcons) canvas.drawPath(moreMask, morePaint);
+            else canvas.drawCircle(0f, 0f, dp(ArcConfig.ICON_MAX * .5f), morePaint);
             morePaint.setColor(Color.WHITE);
             morePaint.setAlpha(alpha);
             for (int i = -1; i <= 1; i++)

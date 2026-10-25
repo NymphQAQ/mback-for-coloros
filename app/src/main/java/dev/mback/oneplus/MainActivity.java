@@ -2,16 +2,25 @@ package dev.mback.oneplus;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.Dialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.VibrationEffect;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Vibrator;
 import android.provider.Settings;
+import android.util.Log;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -20,164 +29,575 @@ import android.widget.TextView;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
-import java.util.function.IntConsumer;
+import java.util.ArrayList;
 
 public final class MainActivity extends Activity {
-    private TextView status;
-    private Switch enabledSwitch;
-    private Switch notificationSwitch;
-    private Switch cornerSwitch;
-    private Switch originalIconSwitch;
-    private SeekBar arcRadiusSlider;
-    private SeekBar arcIconSlider;
-    private SeekBar hoverVibrationSlider;
-    private SeekBar scaleSlider;
-    private SeekBar durationSlider;
-    private SeekBar vibrationSlider;
-    private boolean switching;
-    private int vibrationPreviewLevel;
+    static final int INK = 0xFF183F32, MUTED = 0xFF5D6C62, BACKGROUND = 0xFFF4F6F3;
+    static final int GREEN = 0xFF28684E, PALE = 0xFFE1F0E7, BORDER = 0xFFE6EBE5;
+    private static final int MOTION = 1, HAPTICS = 2, INTERACTION = 3, LAYOUT = 4,
+            ICONS = 5, OUTER = 6, INNER = 7;
+    private static final String[] DETAIL_TITLES = {"", "动作反馈", "触觉反馈", "呼出与交互",
+            "圆弧布局", "图标与触感", "外圈设置", "内圈设置"};
+    private final ArrayList<Runnable> readers = new ArrayList<>();
+    private final ScrollView[] pages = new ScrollView[2];
+    private final Button[] tabs = new Button[2];
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private TextView title, status, message;
+    private FrameLayout content;
+    private LinearLayout root, navigation;
+    private Button back;
+    private ScrollView detailPage;
+    private ArrayList<Runnable> detailReaders;
+    private android.window.OnBackInvokedCallback detailBack;
+    private final Runnable hideMessage = () -> message.setVisibility(View.GONE);
+    private Dialog rangeDialog;
+    private CornerPreview cornerPreview;
+    private int currentTab, detailId, vibrationPreviewLevel;
+    private boolean switching, tracking;
+    private int pendingWrites;
+    private final java.util.concurrent.ExecutorService preferenceWrites =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
 
-    @Override public void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
+    @Override public void onCreate(Bundle state) {
+        super.onCreate(state);
+        getWindow().setStatusBarColor(Color.TRANSPARENT);
+        getWindow().setNavigationBarColor(Color.TRANSPARENT);
+        getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+        getWindow().setNavigationBarContrastEnforced(false);
+        root = column();
+        root.setBackgroundColor(BACKGROUND);
+        root.setForceDarkAllowed(false);
+        root.addView(header());
+        content = new FrameLayout(this);
+        root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
+        buildMBack(content);
+        buildShortcuts(content);
+
+        message = text("", 13, INK, false);
+        message.setPadding(dp(20), dp(12), dp(20), dp(12));
+        message.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        message.setVisibility(View.GONE);
+        root.addView(message);
+        View line = new View(this);
+        line.setBackgroundColor(BORDER);
+        root.addView(line, new LinearLayout.LayoutParams(-1, dp(1)));
+        navigation = new LinearLayout(this);
+        navigation.setBackgroundColor(Color.WHITE);
+        navigation.setPadding(dp(20), dp(8), dp(20), 0);
+        String[] labels = {"MBack", "快捷小窗"};
+        for (int i = 0; i < labels.length; i++) {
+            final int page = i;
+            Button tab = button(labels[i], false);
+            tab.setTextSize(12);
+            tab.setCompoundDrawablePadding(dp(3));
+            tab.setPadding(0, dp(7), 0, dp(7));
+            tab.setContentDescription(labels[i]);
+            tab.setOnClickListener(v -> selectTab(page));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(64), 1);
+            lp.setMargins(i == 0 ? 0 : dp(5), 0, i == 0 ? dp(5) : 0, 0);
+            navigation.addView(tab, lp);
+            tabs[i] = tab;
+        }
+        root.addView(navigation);
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            root.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
+                    insets.getSystemWindowInsetRight(), detailPage == null ? 0 : insets.getSystemWindowInsetBottom());
+            navigation.setPadding(dp(20), dp(8), dp(20), insets.getSystemWindowInsetBottom());
+            return insets.consumeSystemWindowInsets();
+        });
+        setContentView(root);
+        if (Build.VERSION.SDK_INT >= 33) detailBack = this::closeSettings;
+        selectTab(state == null ? 0 : Math.max(0, Math.min(1, state.getInt("tab"))));
+        if (state != null) for (int i = 0; i < pages.length; i++) {
+            final ScrollView page = pages[i];
+            final int scrollY = state.getInt("scroll_" + i);
+            page.post(() -> page.scrollTo(0, scrollY));
+        }
+        refresh();
+        if (state != null) {
+            int page = state.getInt("detail");
+            if (page >= MOTION && page <= INNER) {
+                openSettings(page);
+                int scrollY = state.getInt("detail_scroll");
+                ScrollView restored = detailPage;
+                restored.post(() -> restored.scrollTo(0, scrollY));
+            }
+        }
+    }
+
+    private View header() {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(20), dp(8), dp(20), dp(4));
+        back = button("‹", false);
+        back.setTextSize(30);
+        back.setPadding(0, 0, 0, 0);
+        back.setBackground(ripple(BACKGROUND, 16));
+        back.setContentDescription("返回主页");
+        back.setVisibility(View.GONE);
+        back.setOnClickListener(v -> closeSettings());
+        row.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        title = text("MBack", 26, INK, true);
+        title.setLetterSpacing(-.025f);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        title.setAccessibilityHeading(true);
+        row.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        row.setMinimumHeight(dp(60));
+        status = text("", 12, GREEN, true);
+        status.setPadding(dp(12), dp(7), dp(12), dp(7));
+        status.setBackground(shape(PALE, 18));
+        status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        row.addView(status);
+        return row;
+    }
+
+    private LinearLayout page(FrameLayout parent, int index) {
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setBackgroundColor(Color.rgb(248, 249, 252));
-        layout.setPadding(dp(22), dp(28), dp(22), dp(30));
-        scroll.addView(layout);
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.setClipToPadding(false);
+        LinearLayout body = column();
+        body.setPadding(dp(20), dp(8), dp(20), dp(16));
+        scroll.addView(body);
+        parent.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
+        pages[index] = scroll;
+        return body;
+    }
 
-        layout.addView(text("MBack  ·  Xposed", 27));
-        layout.addView(text("一加 15 / ColorOS\n轻点小白条返回，支持缩放动画和 10 档震动。", 15));
-        status = text("正在读取配置…", 14);
-        layout.addView(status);
+    private void buildMBack(FrameLayout parent) {
+        LinearLayout body = page(parent, 0);
+        LinearLayout enable = card(body);
+        toggle(enable, "轻触返回", "轻点屏幕底部小白条即可返回", MBackHook.SETTING, MBackHook.DEFAULT_ENABLED);
 
-        enabledSwitch = new Switch(this);
-        enabledSwitch.setText("启用轻触返回");
-        layout.addView(enabledSwitch);
-        enabledSwitch.setOnCheckedChangeListener((button, checked) -> {
-            if (!switching) writeGlobal(MBackHook.SETTING, checked ? 1 : 0, "轻触返回");
-        });
+        section(body, "手感设置");
+        LinearLayout feedback = card(body);
+        entry(feedback, "动作反馈", () -> "缩放 " + FeedbackConfig.scale(readGlobal(FeedbackConfig.SCALE_KEY,
+                FeedbackConfig.DEFAULT_SCALE)) + "% · " + FeedbackConfig.duration(readGlobal(
+                FeedbackConfig.DURATION_KEY, FeedbackConfig.DEFAULT_DURATION)) + " ms", () -> openSettings(MOTION));
+        divider(feedback);
+        entry(feedback, "触觉反馈", () -> {
+            int level = FeedbackConfig.vibration(readGlobal(FeedbackConfig.VIBRATION_KEY, FeedbackConfig.DEFAULT_VIBRATION));
+            return level == 0 ? "震动已关闭 · 支持试听" : level + " 级震动 · 支持试听";
+        }, () -> openSettings(HAPTICS));
 
-        layout.addView(section("小白条缩放"));
-        scaleSlider = addSlider(layout, "缩放目标比例", "50%～95% 缩小，100% 保持，105%～150% 放大",
-                FeedbackConfig.SCALE_KEY, FeedbackConfig.SCALE_MIN,
-                FeedbackConfig.SCALE_MAX, FeedbackConfig.SCALE_STEP,
-                FeedbackConfig.DEFAULT_SCALE, "%",
-                value -> {});
-        durationSlider = addSlider(layout, "缩放总时长", "缩小后恢复原尺寸的总动画时间",
-                FeedbackConfig.DURATION_KEY, FeedbackConfig.DURATION_MIN,
-                FeedbackConfig.DURATION_MAX, FeedbackConfig.DURATION_STEP,
-                FeedbackConfig.DEFAULT_DURATION, " ms",
-                value -> {});
-
-        layout.addView(section("触觉反馈"));
-        vibrationSlider = addSlider(layout, "震动强度（0 关闭 / 1–10 级）",
-                "独立调节振幅，震动仅在成功轻点返回时触发",
-                FeedbackConfig.VIBRATION_KEY, FeedbackConfig.VIBRATION_MIN,
-                FeedbackConfig.VIBRATION_MAX, 1,
-                FeedbackConfig.DEFAULT_VIBRATION, " 级",
-                value -> vibrationPreviewLevel = value);
-        Button preview = new Button(this);
-        preview.setText("试听当前震动");
-        layout.addView(preview);
-        preview.setOnClickListener(v -> previewVibration());
-
-        layout.addView(section("Flyme 风格边角小窗"));
-        cornerSwitch = new Switch(this);
-        cornerSwitch.setText("启用左右下角斜滑菜单（竖屏）");
-        layout.addView(cornerSwitch);
-        cornerSwitch.setOnCheckedChangeListener((button, checked) -> {
-            if (!switching) writeGlobal(CornerAppMenu.ENABLE_KEY,
-                    checked ? 1 : 0, "小窗角落手势");
-        });
-        Button chooseApps = new Button(this);
-        chooseApps.setText("管理快捷应用（最多 6 个 + 更多）");
-        layout.addView(chooseApps);
-        chooseApps.setOnClickListener(v ->
-                startActivity(new Intent(this, MoreAppsActivity.class)));
-        layout.addView(text("从左右下角沿圆弧方向滑动。最多 6 个应用，圆弧最下方是蓝色“更多”。松手立即关闭菜单，并按当前选中图标执行操作。", 13));
-        layout.addView(section("圆弧与图标"));
-        arcRadiusSlider = addSlider(layout, "圆弧半径", "屏幕宽度的百分比；越小弯曲越明显",
-                ArcConfig.RADIUS_KEY, ArcConfig.RADIUS_MIN,
-                ArcConfig.RADIUS_MAX, ArcConfig.RADIUS_STEP,
-                ArcConfig.DEFAULT_RADIUS, "%",
-                value -> {});
-        arcIconSlider = addSlider(layout, "图标大小", "应用图标和“更多”图标同步改变",
-                ArcConfig.ICON_SIZE_KEY, ArcConfig.ICON_MIN,
-                ArcConfig.ICON_MAX, ArcConfig.ICON_STEP,
-                ArcConfig.DEFAULT_ICON, " dp",
-                value -> {});
-        layout.addView(text("图标间距会根据圆弧半径、图标尺寸与应用数量自动计算，无需手动调整。", 12));
-        hoverVibrationSlider = addSlider(layout, "滑入图标时震动", "0 关闭，1～10 级；每次进入不同图标时反馈一次",
-                ArcConfig.HOVER_VIBRATION_KEY, 0, 10, 1,
-                ArcConfig.DEFAULT_HOVER_VIBRATION, " 级", value -> {});
-        originalIconSwitch = new Switch(this);
-        originalIconSwitch.setText("使用原始图标形状（关闭则裁剪为圆形）");
-        layout.addView(originalIconSwitch);
-        originalIconSwitch.setOnCheckedChangeListener((button, checked) -> {
-            if (!switching) writeGlobal(ArcConfig.ORIGINAL_ICON_KEY,
-                    checked ? 1 : 0, "图标形状");
-        });
-
-        layout.addView(section("其他"));
-        notificationSwitch = new Switch(this);
-        notificationSwitch.setText("显示常驻状态通知");
-        notificationSwitch.setChecked(getSharedPreferences("mback", MODE_PRIVATE)
-                .getBoolean("show_notification", false));
-        layout.addView(notificationSwitch);
+        section(body, "日常使用");
+        LinearLayout extras = card(body);
+        Switch notificationSwitch = toggleRow(extras, "状态通知", "在通知栏保留一个设置入口");
+        readers.add(() -> notificationSwitch.setChecked(getSharedPreferences("mback", MODE_PRIVATE)
+                .getBoolean("show_notification", false)));
         notificationSwitch.setOnCheckedChangeListener((button, checked) -> {
-            getSharedPreferences("mback", MODE_PRIVATE).edit()
-                    .putBoolean("show_notification", checked).apply();
-            if (checked && Build.VERSION.SDK_INT >= 33 &&
-                    checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                            != PackageManager.PERMISSION_GRANTED) {
+            if (switching) return;
+            getSharedPreferences("mback", MODE_PRIVATE).edit().putBoolean("show_notification", checked).apply();
+            if (checked && Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 42);
             } else {
                 StatusNotification.sync(this);
-                status.setText(checked ? "通知已请求显示" : "通知已关闭");
+                showMessage(checked ? "状态通知已开启" : "状态通知已关闭", false);
             }
         });
+        divider(extras);
+        entry(extras, "打开返回测试页", () -> "检查轻触返回与底部触控",
+                () -> startActivity(new Intent(this, TestActivity.class)));
+        footer(body, "更改自动保存，调整后立即生效。");
+    }
 
-        Button test = new Button(this);
-        test.setText("打开返回测试页面");
-        layout.addView(test);
-        test.setOnClickListener(v -> startActivity(new Intent(this, TestActivity.class)));
+    private void motionControls(LinearLayout body) {
+        LinearLayout motion = card(body);
+        slider(motion, "缩放比例", "100% 保持原尺寸，小于 100% 为缩小", FeedbackConfig.SCALE_KEY,
+                FeedbackConfig.SCALE_MIN, FeedbackConfig.SCALE_MAX, FeedbackConfig.SCALE_STEP,
+                FeedbackConfig.DEFAULT_SCALE, "%");
+        divider(motion);
+        slider(motion, "动画时长", "从轻触到恢复的完整时间", FeedbackConfig.DURATION_KEY,
+                FeedbackConfig.DURATION_MIN, FeedbackConfig.DURATION_MAX, FeedbackConfig.DURATION_STEP,
+                FeedbackConfig.DEFAULT_DURATION, " ms");
+    }
 
-        layout.addView(text("动画仅作用于系统真实小白条，不增加触摸遮罩；上滑及长按不触发反馈。\n\n设置写入需要 root 授权；改动会立即同步到 SystemUI，无需重启。", 13));
-        setContentView(scroll);
+    private void hapticControls(LinearLayout body) {
+        LinearLayout haptics = card(body);
+        slider(haptics, "震动强度", "0 为关闭，1–10 级逐级增强", FeedbackConfig.VIBRATION_KEY,
+                0, 10, 1, FeedbackConfig.DEFAULT_VIBRATION, " 级");
+        Button preview = button("试听当前震动", false);
+        preview.setOnClickListener(v -> previewVibration());
+        haptics.addView(preview, actionParams());
+    }
+
+    private void buildShortcuts(FrameLayout parent) {
+        LinearLayout body = page(parent, 1);
+        LinearLayout enable = card(body);
+        toggle(enable, "底角快捷小窗", "竖屏下，从左下角或右下角斜向内滑", CornerAppMenu.ENABLE_KEY, CornerAppMenu.DEFAULT_ENABLED);
+
+        section(body, "快捷应用");
+        LinearLayout apps = card(body);
+        entry(apps, "管理快捷应用", () -> "中圈 · 已添加 " + ShortcutStore.read(this).size() + "/6 个快捷项",
+                () -> FreeformLauncher.openMore(this));
+        divider(apps);
+        entry(apps, "外圈设置", () -> ringSummary(RingConfig.OUTER), () -> openSettings(OUTER));
+        divider(apps);
+        entry(apps, "内圈设置", () -> ringSummary(RingConfig.INNER), () -> openSettings(INNER));
+
+        section(body, "手势与外观");
+        LinearLayout settings = card(body);
+        entry(settings, "呼出与交互", () -> "呼出范围 · 压暗 " + CornerPreferences.dim(this) + "% · "
+                + "动画 " + CornerPreferences.animationDuration(this) + " ms",
+                () -> openSettings(INTERACTION));
+        divider(settings);
+        entry(settings, "圆弧布局", () -> "半径 " + ArcConfig.radius(readGlobal(ArcConfig.RADIUS_KEY,
+                ArcConfig.DEFAULT_RADIUS)) + "% · 边距与三圈预览", () -> openSettings(LAYOUT));
+        divider(settings);
+        entry(settings, "图标与触感", () -> (readGlobal(ArcConfig.ORIGINAL_ICON_KEY, 0) == 1 ? "原始形状" : "完整圆形")
+                + " · 中圈 " + ArcConfig.icon(readGlobal(ArcConfig.ICON_SIZE_KEY, ArcConfig.DEFAULT_ICON))
+                + " dp · 滑选震动", () -> openSettings(ICONS));
+        footer(body, "选中图标后松手打开 · 更改自动保存");
+    }
+
+    private String ringSummary(RingConfig ring) {
+        if (readGlobal(ring.enableKey, 0) != 1) return "未开启 · 可独立设置应用、数量与大小";
+        String source = readGlobal(ring.recentKey, ring.defaultRecent) == 1 ? "最近应用"
+                : "手动已选 " + ShortcutStore.read(this, ring.ring).size() + " 个";
+        int count = Math.max(1, Math.min(RingConfig.MAX_APPS, readGlobal(ring.countKey, ring.defaultCount)));
+        return source + " · 最多显示 " + count + " 个";
+    }
+
+    private void interactionControls(LinearLayout body) {
+        LinearLayout interaction = card(body);
+        toggle(interaction, "松手后保持展开", "松手选中图标才打开；未选中时保持展开",
+                CornerPreferences.KEEP_OPEN_KEY);
+        divider(interaction);
+        slider(interaction, "屏幕压暗", "呼出时降低背景亮度，0 为关闭", CornerPreferences.DIM_KEY,
+                0, 70, 5, CornerPreferences.DEFAULT_DIM, "%");
+        divider(interaction);
+        animationSlider(interaction);
+        Button range = button("呼出范围与预览", true);
+        range.setOnClickListener(v -> openRangePreview());
+        interaction.addView(range, actionParams());
+    }
+
+    private void animationSlider(LinearLayout parent) {
+        slider(parent, "呼出动画时长", "数值越小越快；0 为立即显示。范围预览可播放当前速度。",
+                CornerPreferences.ANIMATION_KEY, 0, CornerPreferences.MAX_ANIMATION,
+                CornerPreferences.ANIMATION_STEP, CornerPreferences.DEFAULT_ANIMATION, " ms");
+    }
+
+    private void layoutControls(LinearLayout body) {
+        LinearLayout layout = card(body);
+        slider(layout, "圆弧半径", "以屏幕宽度为基准，越小弧度越明显", ArcConfig.RADIUS_KEY,
+                ArcConfig.RADIUS_MIN, ArcConfig.RADIUS_MAX, ArcConfig.RADIUS_STEP, ArcConfig.DEFAULT_RADIUS, "%");
+        divider(layout);
+        slider(layout, "侧面边距", "左右对称，让图标离屏幕侧边更远", ArcConfig.SIDE_MARGIN_KEY,
+                ArcConfig.MARGIN_MIN, ArcConfig.MARGIN_MAX, ArcConfig.MARGIN_STEP, ArcConfig.DEFAULT_SIDE_MARGIN, " dp");
+        divider(layout);
+        slider(layout, "底部边距", "增大后整组图标上移", ArcConfig.BOTTOM_MARGIN_KEY,
+                ArcConfig.MARGIN_MIN, ArcConfig.MARGIN_MAX, ArcConfig.MARGIN_STEP, ArcConfig.DEFAULT_BOTTOM_MARGIN, " dp");
+        previewButton(body);
+    }
+
+    private void iconControls(LinearLayout body) {
+        LinearLayout icons = card(body);
+        slider(icons, "图标大小", "快捷项和更多入口一起调整", ArcConfig.ICON_SIZE_KEY,
+                ArcConfig.ICON_MIN, ArcConfig.ICON_MAX, ArcConfig.ICON_STEP, ArcConfig.DEFAULT_ICON, " dp");
+        divider(icons);
+        toggle(icons, "原始图标形状", "关闭后所有应用与活动图标统一为完整图案圆形", ArcConfig.ORIGINAL_ICON_KEY);
+        divider(icons);
+        slider(icons, "滑选震动", "进入新的图标时轻震一次，0 为关闭", ArcConfig.HOVER_VIBRATION_KEY,
+                0, 10, 1, ArcConfig.DEFAULT_HOVER_VIBRATION, " 级");
+    }
+
+    private void ringControls(LinearLayout body, RingConfig ring) {
+        LinearLayout card = card(body);
+        toggle(card, "角落手势" + ring.label, ring.ring == 1 ? "在现有圆弧外侧增加一圈" : "在现有圆弧靠近屏幕底角的位置增加一圈", ring.enableKey);
+        divider(card);
+        toggle(card, ring.label + "显示最近使用应用", "开启时显示最近应用，关闭时使用手动选择的快捷项", ring.recentKey, ring.defaultRecent);
+        TextView count = text("", 12, MUTED, false);
+        count.setPadding(0, dp(12), 0, dp(6));
+        card.addView(count);
+        readers.add(() -> count.setText(ring.label + "手动已选 " + ShortcutStore.read(this, ring.ring).size() + " 个 · 各圈分别保存"));
+        Button manage = button(ring.label + "应用 / 功能", true);
+        manage.setOnClickListener(v -> FreeformLauncher.openMore(this, ring.ring));
+        card.addView(manage, actionParams());
+        divider(card);
+        slider(card, ring.label + "应用数量", "最多显示 8 个，不足时按实际数量显示", ring.countKey,
+                1, RingConfig.MAX_APPS, 1, ring.defaultCount, " 个");
+        divider(card);
+        slider(card, ring.label + "图标大小", "空间不足时会缩小图标，避免各圈重叠", ring.iconKey,
+                ArcConfig.ICON_MIN, ArcConfig.ICON_MAX, ArcConfig.ICON_STEP, RingConfig.DEFAULT_ICON, " dp");
+        previewButton(body);
+    }
+
+    private void previewButton(LinearLayout parent) {
+        Button preview = button("预览三圈布局", false);
+        preview.setOnClickListener(v -> { openRangePreview(); if (cornerPreview != null) cornerPreview.replay(); });
+        LinearLayout.LayoutParams lp = actionParams();
+        lp.topMargin = dp(16);
+        parent.addView(preview, lp);
+    }
+
+    private void openSettings(int page) {
+        if (detailPage != null) closeSettings();
+        int firstReader = readers.size();
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setVerticalScrollBarEnabled(false);
+        LinearLayout body = column();
+        body.setPadding(dp(20), dp(12), dp(20), dp(24));
+        switch (page) {
+            case MOTION: motionControls(body); break;
+            case HAPTICS: hapticControls(body); break;
+            case INTERACTION: interactionControls(body); break;
+            case LAYOUT: layoutControls(body); break;
+            case ICONS: iconControls(body); break;
+            case OUTER: ringControls(body, RingConfig.OUTER); break;
+            case INNER: ringControls(body, RingConfig.INNER); break;
+        }
+        footer(body, "更改自动保存，返回无需确认。");
+        scroll.addView(body);
+        detailReaders = new ArrayList<>(readers.subList(firstReader, readers.size()));
+        detailPage = scroll;
+        detailId = page;
+        content.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
+        for (ScrollView home : pages) home.setVisibility(View.GONE);
+        navigation.setVisibility(View.GONE);
+        root.setPadding(root.getPaddingLeft(), root.getPaddingTop(), root.getPaddingRight(), navigation.getPaddingBottom());
+        back.setVisibility(View.VISIBLE);
+        if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, detailBack);
+        title.setText(DETAIL_TITLES[page]);
+        title.setTextSize(22);
+        refresh();
+        title.sendAccessibilityEvent(android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED);
+    }
+
+    private void closeSettings() {
+        if (detailPage == null) return;
+        content.removeView(detailPage);
+        readers.removeAll(detailReaders);
+        detailPage = null;
+        detailReaders = null;
+        detailId = 0;
+        tracking = false;
+        back.setVisibility(View.GONE);
+        if (Build.VERSION.SDK_INT >= 33) getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(detailBack);
+        navigation.setVisibility(View.VISIBLE);
+        root.setPadding(root.getPaddingLeft(), root.getPaddingTop(), root.getPaddingRight(), 0);
+        selectTab(currentTab);
         refresh();
     }
 
-    private SeekBar addSlider(LinearLayout parent, String title, String hint,
-                             String key, int min, int max, int step, int fallback,
-                             String suffix, IntConsumer onPreview) {
-        TextView valueLabel = text(title, 17);
-        parent.addView(valueLabel);
+    private void entry(LinearLayout parent, String label, java.util.function.Supplier<String> summary, Runnable action) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(dp(64));
+        row.setPadding(0, dp(12), 0, dp(12));
+        row.setBackground(ripple(Color.WHITE, 12));
+        row.setFocusable(true);
+        row.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+        LinearLayout copy = column();
+        TextView name = text(label, 15, INK, true);
+        name.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        copy.addView(name);
+        TextView value = text("", 12, MUTED, false);
+        value.setPadding(0, dp(5), dp(12), 0);
+        value.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        copy.addView(value);
+        row.addView(copy, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView arrow = text("›", 26, MUTED, false);
+        arrow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        row.addView(arrow);
+        row.setOnClickListener(v -> action.run());
+        readers.add(() -> {
+            String valueText = summary.get();
+            value.setText(valueText);
+            row.setContentDescription(label + "，" + valueText);
+        });
+        parent.addView(row, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    private void openRangePreview() {
+        if (rangeDialog != null) return;
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        LinearLayout body = column();
+        body.setBackgroundColor(BACKGROUND);
+        body.setPadding(dp(18), dp(8), dp(18), dp(8));
+        LinearLayout heading = new LinearLayout(this);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+        heading.addView(text("呼出范围与预览", 20, INK, true), new LinearLayout.LayoutParams(0, -2, 1));
+        Button close = button("关闭", false);
+        close.setOnClickListener(v -> dialog.dismiss());
+        heading.addView(close, new LinearLayout.LayoutParams(dp(72), dp(48)));
+        body.addView(heading);
+        CornerPreview preview = new CornerPreview(this);
+        cornerPreview = preview;
+        body.addView(preview, new LinearLayout.LayoutParams(-1, dp(210)));
+        TextView hint = text("蓝色：底部  ·  橙色：侧边  ·  紫色：三角区域\n在彩色范围向内斜滑，可试用压暗与飞入动画。", 12, MUTED, false);
+        hint.setGravity(Gravity.CENTER);
+        hint.setPadding(0, dp(4), 0, dp(10));
+        body.addView(hint);
+        LinearLayout actions = new LinearLayout(this);
+        String[] labels = {"左下角", "右下角", "播放动画"};
+        for (int i = 0; i < 3; i++) {
+            final int choice = i;
+            Button action = button(labels[i], false);
+            action.setOnClickListener(v -> { if (choice == 2) preview.replay(); else preview.side(choice + 1); });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(48), 1);
+            lp.setMargins(dp(3), 0, dp(3), dp(10));
+            actions.addView(action, lp);
+        }
+        body.addView(actions);
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout controls = column();
+        scroll.addView(controls);
+        body.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        int firstReader = readers.size();
+        animationSlider(controls);
+        android.graphics.Point screen = new android.graphics.Point();
+        getWindowManager().getDefaultDisplay().getRealSize(screen);
+        String[] titles = {"底部长度", "底部高度", "侧边长度", "侧边宽度", "三角区域宽度", "三角区域高度"};
+        String[] hints = {"从底角沿底边向内延伸", "从底边向上延伸", "从底角沿侧边向上延伸",
+                "从侧边向屏幕内延伸", "三角形沿底边的直角边", "三角形沿侧边的直角边"};
+        float density = getResources().getDisplayMetrics().density;
+        LinearLayout area = card(controls);
+        for (int i = 0; i < 6; i++) {
+            if (i > 0) divider(area);
+            int maximum = (i == 0 || i == 4) ? Math.min(CornerRegion.MAX[i],
+                    (int) (screen.x * .45f / density / 2) * 2) : CornerRegion.MAX[i];
+            slider(area, titles[i], hints[i] + "；0 为关闭该区域", CornerRegion.KEYS[i],
+                    0, maximum, 2, CornerPreferences.fallback(i), " dp");
+        }
+        slider(controls, "屏幕压暗", "预览中也会同步显示，0 为关闭", CornerPreferences.DIM_KEY,
+                0, 70, 5, CornerPreferences.DEFAULT_DIM, "%");
+        footer(controls, "左右对称生效。彩色范围取并集，三角区域用于避开圆角难触位置。调整自动保存。");
+        ArrayList<Runnable> dialogReaders = new ArrayList<>(readers.subList(firstReader, readers.size()));
+        dialog.setOnDismissListener(d -> {
+            readers.removeAll(dialogReaders);
+            cornerPreview = null;
+            rangeDialog = null;
+            tracking = false;
+        });
+        dialog.setContentView(body);
+        rangeDialog = dialog;
+        dialog.show();
+        android.view.Window window = dialog.getWindow();
+        window.setBackgroundDrawableResource(android.R.color.transparent);
+        window.setLayout(-1, -1);
+        refresh();
+    }
+
+    private void selectTab(int tab) {
+        currentTab = tab;
+        title.setText(tab == 0 ? "MBack" : "快捷小窗");
+        title.setTextSize(26);
+        for (int i = 0; i < pages.length; i++) {
+            boolean selected = i == tab;
+            pages[i].setVisibility(selected ? View.VISIBLE : View.GONE);
+            tabs[i].setSelected(selected);
+            tabs[i].setTypeface(Typeface.create(selected ? "sans-serif-medium" : "sans-serif", Typeface.NORMAL));
+            tabs[i].setTextColor(selected ? INK : MUTED);
+            tabs[i].setBackground(ripple(selected ? PALE : Color.WHITE, 20));
+            tabs[i].setCompoundDrawablesWithIntrinsicBounds(null,
+                    new HomeArtwork.NavIcon(this, i == 1, selected ? INK : MUTED), null, null);
+        }
+        updateStatus();
+    }
+
+    private void updateStatus() {
+        if (detailPage != null) {
+            status.setText("自动保存");
+            status.setTextColor(GREEN);
+            status.setBackground(shape(PALE, 18));
+            return;
+        }
+        boolean enabled = readGlobal(currentTab == 0 ? MBackHook.SETTING : CornerAppMenu.ENABLE_KEY,
+                currentTab == 0 ? MBackHook.DEFAULT_ENABLED : CornerAppMenu.DEFAULT_ENABLED) == 1;
+        status.setText(enabled ? "已开启" : "未开启");
+        status.setTextColor(enabled ? GREEN : MUTED);
+        status.setBackground(shape(enabled ? PALE : BORDER, 18));
+    }
+
+    private Switch toggleRow(LinearLayout parent, String title, String subtitle) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(dp(80));
+        LinearLayout labels = column();
+        TextView name = text(title, 15, INK, true);
+        name.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        labels.addView(name);
+        TextView hint = text(subtitle, 12, MUTED, false);
+        hint.setPadding(0, dp(5), dp(10), 0);
+        hint.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        labels.addView(hint);
+        row.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+        Switch toggle = new Switch(this);
+        toggle.setMinimumWidth(dp(52));
+        toggle.setMinimumHeight(dp(48));
+        toggle.setThumbTintList(new ColorStateList(new int[][]{{android.R.attr.state_checked}, {}},
+                new int[]{GREEN, 0xFF86938C}));
+        toggle.setTrackTintList(new ColorStateList(new int[][]{{android.R.attr.state_checked}, {}},
+                new int[]{0xFF9DC3AA, 0xFFDDE3DD}));
+        toggle.setContentDescription(title + "，" + subtitle);
+        row.addView(toggle);
+        row.setOnClickListener(v -> toggle.toggle());
+        row.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        parent.addView(row);
+        return toggle;
+    }
+
+    private void toggle(LinearLayout parent, String title, String subtitle, String key) {
+        toggle(parent, title, subtitle, key, 0);
+    }
+
+    private void toggle(LinearLayout parent, String title, String subtitle, String key, int fallback) {
+        Switch toggle = toggleRow(parent, title, subtitle);
+        readers.add(() -> toggle.setChecked(readGlobal(key, fallback) == 1));
+        toggle.setOnCheckedChangeListener((button, checked) -> {
+            if (!switching) writeGlobal(key, checked ? 1 : 0, title);
+        });
+    }
+
+    private void slider(LinearLayout parent, String title, String hint, String key,
+                        int min, int max, int step, int fallback, String suffix) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(16), 0, 0);
+        row.addView(text(title, 15, INK, true), new LinearLayout.LayoutParams(0, -2, 1));
+        TextView value = text("", 13, GREEN, true);
+        value.setPadding(dp(10), dp(5), dp(10), dp(5));
+        value.setBackground(shape(BACKGROUND, 10));
+        row.addView(value);
+        parent.addView(row);
         SeekBar slider = new SeekBar(this);
         slider.setMax((max - min) / step);
-        int initial = readGlobal(key, fallback);
-        final int[] value = {Math.max(min, Math.min(max, initial))};
-        slider.setProgress((value[0] - min) / step);
-        valueLabel.setText(title + "  ·  " + value[0] + suffix);
-        parent.addView(slider);
-        TextView subtitle = text(hint, 12);
-        parent.addView(subtitle);
-        onPreview.accept(value[0]);
+        slider.setProgressTintList(ColorStateList.valueOf(GREEN));
+        slider.setThumbTintList(ColorStateList.valueOf(GREEN));
+        slider.setProgressBackgroundTintList(ColorStateList.valueOf(BORDER));
+        slider.setPadding(dp(6), 0, dp(6), 0);
+        parent.addView(slider, new LinearLayout.LayoutParams(-1, dp(44)));
+        TextView explanation = text(hint, 11, MUTED, false);
+        explanation.setPadding(0, 0, 0, dp(16));
+        parent.addView(explanation);
+        Runnable render = () -> {
+            int number = min + slider.getProgress() * step;
+            value.setText(number == 0 ? "关闭" : number + suffix);
+            slider.setContentDescription(title + "，" + value.getText());
+            if (FeedbackConfig.VIBRATION_KEY.equals(key)) vibrationPreviewLevel = number;
+            if (cornerPreview != null) cornerPreview.setValue(key, number);
+        };
+        readers.add(() -> {
+            int saved = Math.max(min, Math.min(max, readGlobal(key, fallback)));
+            slider.setProgress(Math.round((saved - min) / (float) step));
+            render.run();
+        });
         slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                value[0] = min + progress * step;
-                valueLabel.setText(title + "  ·  " +
-                        (key.equals(FeedbackConfig.VIBRATION_KEY) && value[0] == 0
-                                ? "关闭" : value[0] + suffix));
-                onPreview.accept(value[0]);
-            }
-            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
-            @Override public void onStopTrackingTouch(SeekBar seekBar) {
-                writeGlobal(key, value[0], title);
+            @Override public void onProgressChanged(SeekBar view, int progress, boolean fromUser) { render.run(); }
+            @Override public void onStartTrackingTouch(SeekBar view) { tracking = true; }
+            @Override public void onStopTrackingTouch(SeekBar view) {
+                tracking = false;
+                writeGlobal(key, min + view.getProgress() * step, title);
             }
         });
-        return slider;
     }
 
     private int readGlobal(String key, int fallback) {
@@ -185,32 +605,26 @@ public final class MainActivity extends Activity {
     }
 
     private void refresh() {
-        boolean enabled = readGlobal(MBackHook.SETTING, 0) == 1;
         switching = true;
-        enabledSwitch.setChecked(enabled);
-        if (cornerSwitch != null) {
-            cornerSwitch.setChecked(readGlobal(CornerAppMenu.ENABLE_KEY, 0) == 1);
+        try {
+            if (!tracking) for (Runnable reader : readers) reader.run();
+        } finally {
+            switching = false;
         }
-        if (originalIconSwitch != null) {
-            originalIconSwitch.setChecked(readGlobal(ArcConfig.ORIGINAL_ICON_KEY, 0) == 1);
-        }
-        switching = false;
-        status.setText(enabled ? "轻触返回已开启 · 调节设置后立即生效"
-                : "当前已关闭轻触返回");
+        updateStatus();
     }
 
     private void writeGlobal(String key, int value, String label) {
-        status.setText("正在保存 " + label + "…");
-        new Thread(() -> {
+        showMessage("正在保存…", false);
+        pendingWrites++;
+        preferenceWrites.execute(() -> {
             boolean success = false;
             String message = "";
             try {
-                Process process = new ProcessBuilder("su", "-c",
-                        "settings put global " + key + " " + value)
+                Process process = new ProcessBuilder("su", "-c", "settings put global " + key + " " + value)
                         .redirectErrorStream(true).start();
                 StringBuilder output = new StringBuilder();
-                try (BufferedReader reader = new BufferedReader(
-                        new InputStreamReader(process.getInputStream()))) {
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                     String line;
                     while ((line = reader.readLine()) != null) output.append(line).append(' ');
                 }
@@ -220,105 +634,159 @@ public final class MainActivity extends Activity {
                 message = error.toString();
             }
             boolean ok = success;
-            String error = message;
+            if (!ok) Log.w("MBack", "Saving " + key + " failed: " + message);
             runOnUiThread(() -> {
-                refresh();
-                status.setText(ok ? label + " 已保存 · 立即生效" :
-                        label + " 保存失败：" + error);
+                if (isDestroyed()) return;
+                pendingWrites--;
+                if (pendingWrites == 0) refresh();
+                showMessage(ok ? label + "已保存，立即生效" : "保存失败，请检查 Root 授权", !ok);
             });
-        }, "mback-preference").start();
+        });
+    }
+
+    private void showMessage(String content, boolean error) {
+        handler.removeCallbacks(hideMessage);
+        message.setText(content);
+        message.setTextColor(error ? 0xFFA32D27 : INK);
+        message.setBackgroundColor(error ? 0xFFFBE8E4 : PALE);
+        message.setVisibility(View.VISIBLE);
+        if (!error) handler.postDelayed(hideMessage, 2400);
     }
 
     private void previewVibration() {
         int level = FeedbackConfig.vibration(vibrationPreviewLevel);
-        if (level <= 0) {
-            status.setText("震动为 0 级：已关闭");
-            return;
-        }
+        if (level <= 0) { showMessage("震动已关闭", false); return; }
         try {
             Vibrator vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
-            if (vibrator == null || !vibrator.hasVibrator()) {
-                status.setText("设备没有可用的震动器");
+            if (!TouchFeedback.play(vibrator, level)) {
+                showMessage("设备没有可用的震动器", true);
                 return;
             }
-            vibrator.vibrate(VibrationEffect.createOneShot(
-                    FeedbackConfig.vibrationDuration(level),
-                    vibrator.hasAmplitudeControl()
-                            ? FeedbackConfig.vibrationAmplitude(level)
-                            : VibrationEffect.DEFAULT_AMPLITUDE));
-            status.setText("已试听 " + level + " 级震动");
+            showMessage("已试听 " + level + " 级震动", false);
         } catch (Exception error) {
-            status.setText("震动试听失败：" + error.getMessage());
+            showMessage("暂时无法试听震动，请稍后重试", true);
+            Log.w("MBack", "Vibration preview failed", error);
         }
     }
 
-    private TextView section(String label) {
-        TextView view = text(label, 20);
-        view.setPadding(0, dp(23), 0, dp(8));
-        view.setTextColor(Color.rgb(32, 70, 125));
-        return view;
+    private LinearLayout column() {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        return layout;
     }
 
-    private TextView text(String content, int size) {
+    private LinearLayout card(LinearLayout parent) {
+        LinearLayout card = column();
+        card.setPadding(dp(18), dp(4), dp(18), dp(4));
+        GradientDrawable background = shape(Color.WHITE, 24);
+        background.setStroke(dp(1), BORDER);
+        card.setBackground(background);
+        parent.addView(card, new LinearLayout.LayoutParams(-1, -2));
+        return card;
+    }
+
+    private void section(LinearLayout parent, String title) {
+        TextView label = text(title, 13, MUTED, true);
+        label.setPadding(dp(3), dp(18), 0, dp(9));
+        label.setAccessibilityHeading(true);
+        parent.addView(label);
+    }
+
+    private void footer(LinearLayout parent, String content) {
+        TextView footnote = text(content, 12, MUTED, false);
+        footnote.setPadding(dp(3), dp(18), dp(3), dp(8));
+        parent.addView(footnote);
+    }
+
+    private void divider(LinearLayout parent) {
+        View line = new View(this);
+        line.setBackgroundColor(BORDER);
+        parent.addView(line, new LinearLayout.LayoutParams(-1, dp(1)));
+    }
+
+    private TextView text(String content, int size, int color, boolean bold) {
         TextView view = new TextView(this);
         view.setText(content);
         view.setTextSize(size);
-        view.setTextColor(Color.rgb(36, 45, 59));
-        view.setPadding(0, dp(9), 0, dp(10));
+        view.setTextColor(color);
+        view.setTypeface(Typeface.create(bold ? "sans-serif-medium" : "sans-serif", Typeface.NORMAL));
+        view.setIncludeFontPadding(false);
         return view;
     }
 
-    private int dp(int value) {
-        return (int) (getResources().getDisplayMetrics().density * value + .5f);
+    private Button button(String title, boolean filled) {
+        Button button = new Button(this);
+        button.setText(title);
+        button.setAllCaps(false);
+        button.setTextSize(14);
+        button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        button.setTextColor(filled ? Color.WHITE : INK);
+        button.setBackground(ripple(filled ? INK : PALE, 16));
+        button.setStateListAnimator(null);
+        button.setElevation(0);
+        button.setMinimumHeight(dp(48));
+        button.setMinHeight(dp(48));
+        button.setPadding(dp(14), dp(10), dp(14), dp(10));
+        return button;
     }
 
-    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+    private LinearLayout.LayoutParams actionParams() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(48));
+        lp.setMargins(0, dp(4), 0, dp(12));
+        return lp;
+    }
+
+    private GradientDrawable shape(int color, int radius) {
+        GradientDrawable shape = new GradientDrawable();
+        shape.setColor(color);
+        shape.setCornerRadius(dp(radius));
+        return shape;
+    }
+
+    private RippleDrawable ripple(int color, int radius) {
+        return new RippleDrawable(ColorStateList.valueOf(0x2228684E), shape(color, radius), shape(Color.WHITE, radius));
+    }
+
+    private int dp(int value) { return Math.round(getResources().getDisplayMetrics().density * value); }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
         if (requestCode == 42) {
-            boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            boolean granted = results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED;
             if (!granted) {
-                notificationSwitch.setChecked(false);
-                status.setText("通知权限被拒绝，可在系统设置中开启");
-            } else {
-                StatusNotification.sync(this);
-                status.setText("通知权限已授予");
+                getSharedPreferences("mback", MODE_PRIVATE).edit().putBoolean("show_notification", false).apply();
+                refresh();
             }
+            StatusNotification.sync(this);
+            showMessage(granted ? "状态通知已开启" : "通知权限未开启，可稍后在系统设置中授权", !granted);
         }
+    }
+
+    @Override protected void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        state.putInt("tab", currentTab);
+        for (int i = 0; i < pages.length; i++) state.putInt("scroll_" + i, pages[i].getScrollY());
+        state.putInt("detail", detailId);
+        if (detailPage != null) state.putInt("detail_scroll", detailPage.getScrollY());
+    }
+
+    @Override public void onBackPressed() {
+        if (detailPage != null) closeSettings();
+        else super.onBackPressed();
     }
 
     @Override protected void onResume() {
         super.onResume();
-        if (enabledSwitch != null) refresh();
-        if (scaleSlider != null) {
-            int value = FeedbackConfig.scale(readGlobal(
-                    FeedbackConfig.SCALE_KEY, FeedbackConfig.DEFAULT_SCALE));
-            scaleSlider.setProgress((value - FeedbackConfig.SCALE_MIN)
-                    / FeedbackConfig.SCALE_STEP);
-        }
-        if (durationSlider != null) {
-            int value = FeedbackConfig.duration(readGlobal(
-                    FeedbackConfig.DURATION_KEY, FeedbackConfig.DEFAULT_DURATION));
-            durationSlider.setProgress((value - FeedbackConfig.DURATION_MIN)
-                    / FeedbackConfig.DURATION_STEP);
-        }
-        if (vibrationSlider != null) {
-            vibrationSlider.setProgress(FeedbackConfig.vibration(readGlobal(
-                    FeedbackConfig.VIBRATION_KEY, FeedbackConfig.DEFAULT_VIBRATION)));
-        }
-        if (arcRadiusSlider != null) {
-            arcRadiusSlider.setProgress((ArcConfig.radius(readGlobal(
-                    ArcConfig.RADIUS_KEY, ArcConfig.DEFAULT_RADIUS)) - ArcConfig.RADIUS_MIN)
-                    / ArcConfig.RADIUS_STEP);
-        }
-        if (arcIconSlider != null) {
-            arcIconSlider.setProgress((ArcConfig.icon(readGlobal(
-                    ArcConfig.ICON_SIZE_KEY, ArcConfig.DEFAULT_ICON)) - ArcConfig.ICON_MIN)
-                    / ArcConfig.ICON_STEP);
-        }
-        if (hoverVibrationSlider != null) {
-            hoverVibrationSlider.setProgress(ArcConfig.hoverVibration(readGlobal(
-                    ArcConfig.HOVER_VIBRATION_KEY, ArcConfig.DEFAULT_HOVER_VIBRATION)));
-        }
+        if (status != null) refresh();
         StatusNotification.sync(this);
+    }
+
+    @Override protected void onDestroy() {
+        handler.removeCallbacks(hideMessage);
+        if (rangeDialog != null) rangeDialog.dismiss();
+        if (Build.VERSION.SDK_INT >= 33 && detailPage != null)
+            getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(detailBack);
+        preferenceWrites.shutdown();
+        super.onDestroy();
     }
 }

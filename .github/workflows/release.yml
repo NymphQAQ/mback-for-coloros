@@ -1,20 +1,27 @@
-name: Verify MBack source (no APK publishing)
+name: Build MBack and publish prepared releases
 
 on:
   push:
     branches: [main]
     paths:
-      - ".github/workflows/release.yml"
+      - ".github/**"
       - "app/**"
       - "stubs/**"
       - "build-local.sh"
-      - "tests/**"
+      - "releases/**"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the prepared signed APK
+        type: boolean
+        default: false
 
-# Read-only CI. Deliberately no GitHub Release, tag, artifact upload,
-# package publishing, or repository write permissions until requested.
 permissions:
   contents: read
+
+env:
+  RELEASE_TAG: v0.7.0
+  RELEASE_APK: releases/mback-v0.7.0.apk
 
 jobs:
   verify:
@@ -29,33 +36,44 @@ jobs:
           java-version: "21"
       - name: Install Android build tools
         run: |
-          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1)"
-          test -n "$SDKMANAGER"
-          yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platforms;android-35" "build-tools;36.0.0"
-      - name: Create temporary CI-only signing key
+          SDKMANAGER="$(find "${ANDROID_HOME}/cmdline-tools" -type f -name sdkmanager | head -n 1)"
+          test -n "${SDKMANAGER}"
+          yes | "${SDKMANAGER}" --licenses >/dev/null || true
+          "${SDKMANAGER}" "platforms;android-35" "build-tools;36.0.0"
+      - name: Create temporary build-only signing key
         run: |
-          mkdir -p "$HOME/.android"
-          keytool -genkeypair -v -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-      - name: Compile source and check APK locally
+          mkdir -p "${HOME}/.android"
+          keytool -genkeypair -v -keystore "${HOME}/.android/debug.keystore" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+      - name: Compile source
+        run: bash build-local.sh
+      - name: Verify prepared release APK
+        if: contains(github.event.head_commit.message, '[release]') || inputs.publish
         run: |
-          bash build-local.sh
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify app/build/local/mback-debug.apk
-      - name: Run pure Java regression tests
+          (
+            cd releases
+            sha256sum --check "$(basename "${RELEASE_APK}").sha256"
+          )
+          "${ANDROID_HOME}/build-tools/36.0.0/apksigner" verify "${RELEASE_APK}"
+          badging="$("${ANDROID_HOME}/build-tools/36.0.0/aapt" dump badging "${RELEASE_APK}")"
+          [[ "${badging}" == *"versionName='${RELEASE_TAG#v}'"* ]]
+
+  publish:
+    needs: verify
+    if: contains(github.event.head_commit.message, '[release]') || inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout verified commit
+        uses: actions/checkout@v4
+      - name: Publish signed APK and checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p app/build/local/tests
-          javac -d app/build/local/tests \
-            app/src/main/java/dev/mback/oneplus/CornerGesture.java \
-            tests/dev/mback/oneplus/CornerGestureTest.java \
-            app/src/main/java/dev/mback/oneplus/ArcConfig.java \
-            app/src/main/java/dev/mback/oneplus/FlymeArcGeometry.java \
-            tests/dev/mback/oneplus/FlymeArcGeometryTest.java \
-            app/src/main/java/dev/mback/oneplus/HitZone.java \
-            tests/dev/mback/oneplus/HitZoneTest.java \
-            app/src/main/java/dev/mback/oneplus/FeedbackConfig.java \
-            tests/dev/mback/oneplus/FeedbackConfigTest.java \
-            app/src/main/java/dev/mback/oneplus/PillGeometry.java \
-            tests/dev/mback/oneplus/PillGeometryTest.java
-          for test in CornerGestureTest FlymeArcGeometryTest HitZoneTest FeedbackConfigTest PillGeometryTest; do
-            java -cp app/build/local/tests "dev.mback.oneplus.$test"
-          done
+          (
+            cd releases
+            sha256sum --check "$(basename "${RELEASE_APK}").sha256"
+          )
+          gh release create "${RELEASE_TAG}" "${RELEASE_APK}" "${RELEASE_APK}.sha256" \
+            --target "${GITHUB_SHA}" --title "MBack for ColorOS ${RELEASE_TAG}" \
+            --notes-file .github/release-notes.md --prerelease

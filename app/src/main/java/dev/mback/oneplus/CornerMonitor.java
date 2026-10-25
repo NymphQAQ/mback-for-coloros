@@ -16,10 +16,9 @@ import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 
 /**
- * Observe the whole finger path without pilfering. Bottom-corner input
- * shields prevent app click-through. Xposed guards in Launcher/SystemUI stop
- * Quickstep/Back from consuming these reserved corner gestures or showing
- * their first-frame previews. Center navigation gestures are unaffected.
+ * Observe app touches until an inward diagonal is confirmed, then pilfer once.
+ * Fixed shields stay inside the navigation inset so app controls remain touchable.
+ * Launcher/SystemUI guards prevent native navigation from racing the corner gesture.
  */
 final class CornerMonitor {
     private static final String TAG = "[MBack-Corner]";
@@ -32,7 +31,7 @@ final class CornerMonitor {
     CornerMonitor(Context context, CornerAppMenu menu) {
         this.context = context;
         this.menu = menu;
-        this.shields = new CornerTouchShield(context);
+        this.shields = new CornerTouchShield(context, menu::prepare, menu::hide);
     }
 
     void start() {
@@ -53,6 +52,7 @@ final class CornerMonitor {
     }
 
     void stop() {
+        menu.hide();
         shields.stop();
         if (receiver != null) {
             receiver.dispose();
@@ -67,6 +67,8 @@ final class CornerMonitor {
     private final class Receiver extends InputEventReceiver {
         private int side;
         private float downX, downY;
+        private long downTime = -1;
+        private final IconFlight trail = new IconFlight();
 
         Receiver(InputChannel channel, Looper looper) { super(channel, looper); }
 
@@ -74,6 +76,9 @@ final class CornerMonitor {
             try {
                 if (event instanceof MotionEvent) onTouch((MotionEvent) event);
             } catch (Throwable error) {
+                side = CornerGesture.NONE;
+                downTime = -1;
+                menu.hide();
                 XposedBridge.log(TAG + " corner touch error: " + error);
             } finally {
                 finishInputEvent(event, false);
@@ -83,26 +88,18 @@ final class CornerMonitor {
         private void onTouch(MotionEvent event) {
             if (ShadeVisibility.isExpanded()) {
                 side = CornerGesture.NONE;
+                downTime = -1;
                 if (menu.isOpened()) menu.hide();
                 return;
             }
             int action = event.getActionMasked();
-            if (menu.isGestureActive()) {
-                if (action == MotionEvent.ACTION_MOVE) {
-                    menu.highlightBySwipe(event.getRawX(), event.getRawY());
-                } else if (action == MotionEvent.ACTION_UP) {
-                    menu.finishGesture(event.getRawX(), event.getRawY());
-                    side = CornerGesture.NONE;
-                } else if (action == MotionEvent.ACTION_CANCEL) {
-                    menu.hide();
-                    side = CornerGesture.NONE;
-                }
-                return;
-            }
-            // Menu is never sticky: it lives exclusively during the finger gesture.
-            if (menu.isOpened()) return;
+            // After release the overlay owns a fresh touch stream.
+            if (menu.isLatched()) { side = CornerGesture.NONE; downTime = -1; return; }
             if (action == MotionEvent.ACTION_DOWN) {
+                // A new stream must recover even if the previous UP/CANCEL was lost.
+                downTime = event.getDownTime();
                 side = CornerGesture.NONE;
+                menu.hide();
                 Display display = ((WindowManager) context.getSystemService(
                         Context.WINDOW_SERVICE)).getDefaultDisplay();
                 if (display == null || display.getRotation() != android.view.Surface.ROTATION_0)
@@ -114,23 +111,49 @@ final class CornerMonitor {
                 display.getRealSize(size);
                 downX = event.getRawX();
                 downY = event.getRawY();
-                side = CornerGesture.screenOrigin(downX, downY, size.x, size.y,
-                        context.getResources().getDisplayMetrics().density);
+                trail.reset(downX, downY);
+                side = CornerPreferences.region(context, size.x, size.y).origin(downX, downY);
+                if (side != CornerGesture.NONE) menu.refreshExtraApps();
+                return;
+            }
+            // Removing the previous overlay can deliver its ending events late.
+            if (downTime < 0 || event.getDownTime() != downTime) return;
+            if (action == MotionEvent.ACTION_MOVE && (side != CornerGesture.NONE || menu.isGestureActive())) {
+                for (int i = 0; i < event.getHistorySize(); i++)
+                    trail.add(event.getHistoricalX(i), event.getHistoricalY(i));
+                trail.add(event.getRawX(), event.getRawY());
+            }
+            if (menu.isGestureActive()) {
+                if (action == MotionEvent.ACTION_MOVE) {
+                    menu.highlightBySwipe(event.getRawX(), event.getRawY());
+                } else if (action == MotionEvent.ACTION_UP) {
+                    side = CornerGesture.NONE;
+                    downTime = -1;
+                    menu.finishGesture(event.getRawX(), event.getRawY(), event.getEventTime());
+                } else if (action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_POINTER_DOWN) {
+                    side = CornerGesture.NONE;
+                    downTime = -1;
+                    menu.hide();
+                }
                 return;
             }
             if (side == CornerGesture.NONE) return;
             if (action == MotionEvent.ACTION_POINTER_DOWN) {
                 side = CornerGesture.NONE;
+                downTime = -1;
             } else if (action == MotionEvent.ACTION_MOVE
                     && CornerGesture.earlyCapture(side, downX, downY,
                     event.getRawX(), event.getRawY(),
                     context.getResources().getDisplayMetrics().density)) {
-                // Neither the app nor native navigation owns the start region.
-                // Drawing here does not steal the ongoing input stream.
-                menu.showForGesture(side);
+                int capturedSide = side;
                 side = CornerGesture.NONE;
+                // Cancel the app's pending touch only after recognizing the diagonal.
+                monitor.pilferPointers();
+                menu.showForGesture(capturedSide, trail);
+                menu.highlightBySwipe(event.getRawX(), event.getRawY());
             } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
                 side = CornerGesture.NONE;
+                downTime = -1;
             }
         }
     }

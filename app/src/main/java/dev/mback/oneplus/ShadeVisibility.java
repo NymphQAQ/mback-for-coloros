@@ -6,7 +6,7 @@ import java.util.ArrayList;
 
 /**
  * Shared SystemUI notification-shade gate. The panel state is observed from
- * NotificationPanelViewController, not inferred from a touch's coordinates.
+ * NotificationShadeWindowControllerImpl, including ColorOS Control Center.
  * Launcher sees the same state via Settings.Global, updated only on transitions.
  */
 final class ShadeVisibility {

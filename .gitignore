@@ -4,3 +4,8 @@ build/
 app/build/
 local.properties
 *.apk
+!releases/*.apk
+artifacts/
+.DS_Store
+__pycache__/
+FlymeSystemUITools-ColorOS15-17

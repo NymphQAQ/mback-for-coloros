@@ -11,10 +11,12 @@
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
         </activity>
         <activity android:name=".TestActivity" android:exported="false"/>
-        <!-- SystemUI has a different UID; export only this explicit,
-             parameter-free management dialog so the More gesture can open it. -->
+        <!-- SystemUI opens this parameter-free activity in a separate native small-window task. -->
         <activity android:name=".MoreAppsActivity" android:exported="true"
-                  android:theme="@android:style/Theme.Material.Light.Dialog.NoActionBar"/>
+                  android:label="更多应用" android:resizeableActivity="true"
+                  android:taskAffinity="dev.mback.oneplus.shortcuts" android:launchMode="singleTask"/>
+        <provider android:name=".ShortcutProvider" android:authorities="dev.mback.oneplus.shortcuts"
+                  android:exported="true"/>
         <receiver android:name=".BootReceiver" android:exported="false">
             <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/></intent-filter>
         </receiver>

@@ -6,10 +6,13 @@ final class CornerGesture {
     static final int LEFT = 1;
     static final int RIGHT = 2;
 
-    static int screenOrigin(float x, float y, int width, int height, float density) {
-        if (width <= 0 || height <= 0 || width >= height) return NONE;
-        float stripHeight = Math.max(45f * density, height * .065f);
-        if (y < height - stripHeight || y >= height) return NONE;
+    static int triggerHeight(int bottomInset, float density) {
+        return Math.max(bottomInset, Math.round(48f * density));
+    }
+
+    static int screenOrigin(float x, float y, int width, int height, int triggerHeight) {
+        if (width <= 0 || height <= 0 || width >= height || triggerHeight <= 0) return NONE;
+        if (y < height - Math.min(height, triggerHeight) || y >= height) return NONE;
         if (x >= 0 && x <= width * .19f) return LEFT;
         if (x >= width * .81f && x < width) return RIGHT;
         return NONE;

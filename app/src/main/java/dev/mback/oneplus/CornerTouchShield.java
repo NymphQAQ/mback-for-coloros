@@ -18,18 +18,22 @@ import android.graphics.PixelFormat;
 import de.robv.android.xposed.XposedBridge;
 
 /**
- * Two tiny, invisible SystemUI-owned touch targets at the portrait bottom
- * corners. They prevent tapping or scrolling the underlying app during a
- * Flyme corner gesture without covering the central navigation bar.
+ * Invisible SystemUI-owned touch targets confined to the bottom navigation inset.
+ * They prevent click-through during a corner gesture without covering app controls.
  *
- * The SPY input monitor observes touches on these windows without pilfering,
- * while native Quickstep/edge-back receivers are filtered by the Xposed hooks.
+ * The input monitor pilfers only after recognizing an inward diagonal;
+ * the larger recognition area does not require a larger blocking window.
  */
 final class CornerTouchShield {
     private static final String TAG = "[MBack-Corner]";
     private final Context context;
     private final WindowManager wm;
     private final DisplayManager displays;
+    private final Runnable onReady, onSuspend;
+    private final android.database.ContentObserver regionObserver =
+            new android.database.ContentObserver(new Handler(Looper.getMainLooper())) {
+                @Override public void onChange(boolean selfChange) { clear(); update(); }
+            };
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final DisplayManager.DisplayListener rotationListener =
             new DisplayManager.DisplayListener() {
@@ -53,12 +57,12 @@ final class CornerTouchShield {
     };
     private final Runnable awaitUnlock = new Runnable() {
         @Override public void run() {
-            if (!started || ShadeVisibility.isExpanded() || (left != null && right != null)) return;
+            if (!started || ShadeVisibility.isExpanded() || available) return;
             android.os.PowerManager power = (android.os.PowerManager)
                     context.getSystemService(Context.POWER_SERVICE);
             if (power != null && !power.isInteractive()) return;
             update();
-            if (started && (left == null || right == null)) {
+            if (started && !available) {
                 handler.postDelayed(this, 2000);
             }
         }
@@ -68,11 +72,13 @@ final class CornerTouchShield {
         else update();
     };
     private View left, right;
-    private boolean started;
+    private boolean started, available;
     private int lastRotation = -1;
 
-    CornerTouchShield(Context context) {
+    CornerTouchShield(Context context, Runnable onReady, Runnable onSuspend) {
         this.context = context;
+        this.onReady = onReady;
+        this.onSuspend = onSuspend;
         wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
         displays = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
     }
@@ -81,6 +87,8 @@ final class CornerTouchShield {
         if (started) return;
         started = true;
         ShadeVisibility.addListener(onShadeChange);
+        for (String key : CornerRegion.KEYS) context.getContentResolver().registerContentObserver(
+                android.provider.Settings.Global.getUriFor(key), false, regionObserver);
         if (displays != null) displays.registerDisplayListener(rotationListener, handler);
         IntentFilter screenEvents = new IntentFilter();
         screenEvents.addAction(Intent.ACTION_SCREEN_OFF);
@@ -95,6 +103,7 @@ final class CornerTouchShield {
         if (!started) return;
         started = false;
         ShadeVisibility.removeListener(onShadeChange);
+        context.getContentResolver().unregisterContentObserver(regionObserver);
         if (displays != null) displays.unregisterDisplayListener(rotationListener);
         try { context.unregisterReceiver(screenReceiver); } catch (Exception ignored) {}
         handler.removeCallbacks(awaitUnlock);
@@ -109,7 +118,7 @@ final class CornerTouchShield {
             clear();
             return;
         }
-        if (rotation == lastRotation && left != null && right != null) return;
+        if (rotation == lastRotation && available) return;
         lastRotation = rotation;
         clear();
         if (!started || rotation != 0) {
@@ -125,10 +134,13 @@ final class CornerTouchShield {
         Point size = new Point();
         display.getRealSize(size);
         if (size.x >= size.y) return;
-        int width = Math.round(size.x * .19f);
-        int height = Math.round(Math.max(dp(45f), size.y * .065f));
+        int width = CornerPreferences.region(context, size.x, size.y).shieldWidth();
+        if (width == 0) { available = true; onReady.run(); return; }
+        int height = Math.min(size.y, navigationHeight(context));
         left = create("Left", Gravity.BOTTOM | Gravity.LEFT, width, height);
         right = create("Right", Gravity.BOTTOM | Gravity.RIGHT, width, height);
+        available = left != null && right != null;
+        onReady.run();
         XposedBridge.log(TAG + " touch shields active " + width + "x" + height);
     }
 
@@ -161,6 +173,8 @@ final class CornerTouchShield {
     }
 
     private void clear() {
+        available = false;
+        onSuspend.run();
         if (left != null) {
             try { wm.removeViewImmediate(left); } catch (Throwable ignored) {}
             left = null;
@@ -171,7 +185,10 @@ final class CornerTouchShield {
         }
     }
 
-    private int dp(float dps) {
-        return Math.round(dps * context.getResources().getDisplayMetrics().density);
+    static int navigationHeight(Context context) {
+        android.content.res.Resources resources = context.getResources();
+        int id = resources.getIdentifier("navigation_bar_height", "dimen", "android");
+        return id == 0 ? Math.max(1, Math.round(16 * resources.getDisplayMetrics().density))
+                : resources.getDimensionPixelSize(id);
     }
 }

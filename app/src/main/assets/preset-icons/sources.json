@@ -1,0 +1,32 @@
+[
+  {
+    "asset": "wechat-scan.png",
+    "source": "artifacts/assistant-icons-17.0.48/相关图标/04__ic_wechat_scan.png",
+    "sha256": "2f393d2a60d7e17a60875c942ce85e003732caa4bb00e9823733b6f6d7a37dc3"
+  },
+  {
+    "asset": "wechat-payment.png",
+    "source": "artifacts/assistant-icons-17.0.48/相关图标/03__ic_wechat_payment.png",
+    "sha256": "1b2bdffa707a0cf32a99f3547c80900e557b815f1d4fef83c6baca79e3383753"
+  },
+  {
+    "asset": "alipay-scan.png",
+    "source": "artifacts/assistant-icons-17.0.48/相关图标/01__ic_alipay_scan.png",
+    "sha256": "7dedc7184820fee6fc0c932026f336498734f729ef33bb8c36403a302e0e741f"
+  },
+  {
+    "asset": "alipay-payment.webp",
+    "source": "artifacts/assistant-icons-17.0.48/相关图标/12__ic_alipay_payment.webp",
+    "sha256": "d3518b992134b5b8d8a0af00c028ce5dcf3c4d3bb5705eeb9dbeb2aa297ecdda"
+  },
+  {
+    "asset": "wechat-transit.png",
+    "source": "artifacts/assistant-icons-17.0.48/相关图标/05__ic_wechat_traffic.png",
+    "sha256": "2b7f3993ad03513456dbdf812f8e24ef73f5f53aef4ccff41504c646d9c6022c"
+  },
+  {
+    "asset": "alipay-transit.webp",
+    "source": "user-provided Alipay transit image",
+    "sha256": "2d73a538abb250ab5a20dbb8dbff0fa1210e0cd69e976a357b4c4e2925aece74"
+  }
+]

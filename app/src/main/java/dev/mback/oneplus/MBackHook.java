@@ -1,7 +1,6 @@
 package dev.mback.oneplus;
 
 import android.database.ContentObserver;
-import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.animation.TimeInterpolator;
 import android.view.animation.AccelerateDecelerateInterpolator;
@@ -31,11 +30,12 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 /**
  * Hooks SystemUI's NavigationBarView, not applications or /dev/input.
  * The SystemUI navigation window has an empty touchable region on ColorOS gesture mode.
- * We cover the full thickness of the navigation window around the handle,
- * so lower-edge taps no longer fall through to the application underneath.
+ * The hit region follows the bottom navigation inset and reaches the screen edge,
+ * so taps above the navigation bar still reach application controls.
  */
 public final class MBackHook implements IXposedHookLoadPackage {
     public static final String SETTING = "mback_xposed_enabled";
+    static final int DEFAULT_ENABLED = 1;
     private static final String TAG = "[MBack]";
     private static final WeakHashMap<ViewGroup, Interceptor> INSTANCES = new WeakHashMap<>();
 
@@ -86,7 +86,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                 if (param.thisObject instanceof ViewGroup) detach((ViewGroup) param.thisObject);
             }
         });
-        XposedBridge.log(TAG + " v0.6.8-adaptive-arc-shade-guard registered: " + cls.getName()
+        XposedBridge.log(TAG + " v0.7.0-phone-defaults registered: " + cls.getName()
                 + " dispatch=" + dispatchOwner.getName());
     }
 
@@ -103,7 +103,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
             return;
         }
         XposedBridge.hookAllMethods(cls, "K", new XC_MethodHook() {
-            private final WeakHashMap<Object, Boolean> cornerStreams = new WeakHashMap<>();
+            private final WeakHashMap<Object, Long> cornerStreams = new WeakHashMap<>();
             @Override protected void beforeHookedMethod(MethodHookParam param) {
                 if (param.args == null || param.args.length != 1
                         || !(param.args[0] instanceof MotionEvent)
@@ -114,7 +114,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                 if (action == MotionEvent.ACTION_DOWN) {
                     android.content.Context context = (android.content.Context) service;
                     boolean enabled = Settings.Global.getInt(context.getContentResolver(),
-                            CornerAppMenu.ENABLE_KEY, 0) == 1;
+                            CornerAppMenu.ENABLE_KEY, CornerAppMenu.DEFAULT_ENABLED) == 1;
                     boolean inside = false;
                     if (enabled && Settings.Global.getInt(
                             context.getContentResolver(), ShadeVisibility.KEY, 0) == 1) {
@@ -133,9 +133,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                             if (display != null && display.getRotation() == 0) {
                                 android.graphics.Point size = new android.graphics.Point();
                                 display.getRealSize(size);
-                                float density = context.getResources().getDisplayMetrics().density;
-                                inside = CornerGesture.screenOrigin(
-                                        e.getRawX(), e.getRawY(), size.x, size.y, density)
+                                inside = CornerPreferences.region(context, size.x, size.y).origin(e.getRawX(), e.getRawY())
                                         != CornerGesture.NONE;
                             }
                         } catch (Throwable t) {
@@ -143,15 +141,16 @@ public final class MBackHook implements IXposedHookLoadPackage {
                         }
                     }
                     if (inside) {
-                        cornerStreams.put(service, Boolean.TRUE);
+                        cornerStreams.put(service, e.getDownTime());
                         XposedBridge.log(TAG + " Launcher Quickstep BLOCK corner DOWN");
                         param.setResult(null);
                         return;
                     }
                     cornerStreams.remove(service);
-                } else if (Boolean.TRUE.equals(cornerStreams.get(service))) {
+                } else if (cornerStreams.containsKey(service)) {
                     param.setResult(null);
-                    if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL)
+                    if ((action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL)
+                            && e.getDownTime() == cornerStreams.get(service))
                         cornerStreams.remove(service);
                 }
             }
@@ -160,33 +159,44 @@ public final class MBackHook implements IXposedHookLoadPackage {
     }
 
     private static void hookNotificationShade(ClassLoader loader) {
-        final Class<?> panel = XposedHelpers.findClassIfExists(
-                "com.android.systemui.shade.NotificationPanelViewController", loader);
-        if (panel == null) {
-            XposedBridge.log(TAG + " notification shade controller not found");
+        final Class<?> window = XposedHelpers.findClassIfExists(
+                "com.android.systemui.shade.NotificationShadeWindowControllerImpl", loader);
+        if (window == null) {
+            XposedBridge.log(TAG + " notification shade window controller not found");
             return;
         }
-        // ColorOS 17 calls setExpandedHeightInternal(float, Boolean) throughout
-        // shade transitions. Hook AFTER the fraction changes, then notify the
-        // two corner shields and Launcher only if expanded/collapsed flips.
+        // ColorOS resets the notification fraction when switching to Control Center.
         XC_MethodHook observer = new XC_MethodHook() {
             @Override protected void afterHookedMethod(MethodHookParam param) {
                 if (param.hasThrowable()) return;
-                updateShadeFromPanel(param.thisObject);
+                updateShadeFromWindow(param.thisObject);
             }
         };
-        XposedBridge.hookAllConstructors(panel, observer);
-        XposedBridge.hookAllMethods(panel, "setExpandedHeightInternal", observer);
+        XposedBridge.hookAllConstructors(window, observer);
+        XposedBridge.hookAllMethods(window, "apply", observer);
+        Class<?> shadeView = XposedHelpers.findClassIfExists(
+                "com.android.systemui.shade.NotificationShadeWindowView", loader);
+        if (shadeView != null) {
+            XposedBridge.hookAllMethods(shadeView, "dispatchTouchEvent", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam param) {
+                    if (param.args.length == 0 || !(param.args[0] instanceof MotionEvent)) return;
+                    for (Interceptor interceptor : INSTANCES.values()) {
+                        interceptor.observeShadeTouch((MotionEvent) param.args[0]);
+                    }
+                }
+            });
+        }
         XposedBridge.log(TAG + " notification shade expand/collapse gate attached");
     }
 
-    private static void updateShadeFromPanel(Object panelController) {
+    private static void updateShadeFromWindow(Object windowController) {
         try {
-            float fraction = XposedHelpers.getFloatField(panelController,
-                    "mExpandedFraction");
-            View panelView = (View) XposedHelpers.getObjectField(panelController, "mView");
-            ShadeVisibility.update(panelView == null ? null : panelView.getContext(),
-                    fraction > .001f);
+            Object state = XposedHelpers.getObjectField(windowController, "mCurrentState");
+            android.content.Context context = (android.content.Context)
+                    XposedHelpers.getObjectField(windowController, "mContext");
+            ShadeVisibility.update(context,
+                    XposedHelpers.getBooleanField(state, "panelVisible")
+                            || XposedHelpers.getBooleanField(state, "qsPanelVisible"));
         } catch (Throwable ignored) {
             // SystemUI internals vary by ROM. Do not break shade animations.
         }
@@ -203,7 +213,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
         // NavigationBarGestureUpEx or the back-panel animation sees a touch.
         final String entry = "$r8$lambda$kHZGHLhsJ29ijVg4dOahX71CzUw";
         XposedBridge.hookAllMethods(edge, entry, new XC_MethodHook() {
-            private final WeakHashMap<Object, Boolean> blocked = new WeakHashMap<>();
+            private final WeakHashMap<Object, Long> blocked = new WeakHashMap<>();
             @Override protected void beforeHookedMethod(MethodHookParam param) {
                 if (param.args == null || param.args.length != 2
                         || !(param.args[1] instanceof MotionEvent)) return;
@@ -219,7 +229,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                     } catch (Throwable ignored) {}
                     boolean isCorner = context != null
                             && Settings.Global.getInt(context.getContentResolver(),
-                                    CornerAppMenu.ENABLE_KEY, 0) == 1;
+                                    CornerAppMenu.ENABLE_KEY, CornerAppMenu.DEFAULT_ENABLED) == 1;
                     if (isCorner && ShadeVisibility.isExpanded()) isCorner = false;
                     if (isCorner) {
                         android.app.KeyguardManager km = (android.app.KeyguardManager)
@@ -233,21 +243,20 @@ public final class MBackHook implements IXposedHookLoadPackage {
                         android.graphics.Point size = new android.graphics.Point();
                         display.getRealSize(size);
                         isCorner = display.getRotation() == 0
-                                && CornerGesture.screenOrigin(e.getRawX(), e.getRawY(),
-                                size.x, size.y,
-                                context.getResources().getDisplayMetrics().density)
+                                && CornerPreferences.region(context, size.x, size.y).origin(e.getRawX(), e.getRawY())
                                 != CornerGesture.NONE;
                     }
                     if (isCorner) {
-                        blocked.put(instance, true);
+                        blocked.put(instance, e.getDownTime());
                         XposedBridge.log(TAG + " SystemUI edge-back BLOCK corner DOWN");
                         param.setResult(null);
                     } else {
                         blocked.remove(instance);
                     }
-                } else if (Boolean.TRUE.equals(blocked.get(instance))) {
+                } else if (blocked.containsKey(instance)) {
                     param.setResult(null);
-                    if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL)
+                    if ((action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL)
+                            && e.getDownTime() == blocked.get(instance))
                         blocked.remove(instance);
                 }
             }
@@ -277,6 +286,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
         private final View cover;
         private final Handler handler = new Handler(Looper.getMainLooper());
         private final ContentObserver settingObserver;
+        private final Runnable onShadeChange;
         private Object insetsListener;
         private boolean active;
         private boolean cornerEnabled;
@@ -292,7 +302,9 @@ public final class MBackHook implements IXposedHookLoadPackage {
         private boolean pressed;
         private boolean moved;
         private float downX, downY;
-        private long downAt, lastBackAt;
+        private long downAt;
+        private final java.util.concurrent.ExecutorService backEvents =
+                java.util.concurrent.Executors.newSingleThreadExecutor(r -> new Thread(r, "mback-back"));
 
         Interceptor(ViewGroup root) {
             this.root = root;
@@ -301,6 +313,13 @@ public final class MBackHook implements IXposedHookLoadPackage {
             // Parent dispatch is hooked directly, as ColorOS may intercept events before child views.
             // A clickable cover keeps the window's region non-pass-through if hooks fail.
             cover.setOnTouchListener(null);
+            onShadeChange = () -> {
+                pressed = false;
+                hitRect.setEmpty();
+                restoreHandle();
+                root.requestLayout();
+                root.invalidate();
+            };
             settingObserver = new ContentObserver(handler) {
                 @Override public void onChange(boolean selfChange) {
                     active = readEnabled();
@@ -343,6 +362,13 @@ public final class MBackHook implements IXposedHookLoadPackage {
                     Settings.Global.getUriFor(CornerAppMenu.ENABLE_KEY), false, settingObserver);
             root.getContext().getContentResolver().registerContentObserver(
                     Settings.Global.getUriFor(CornerAppMenu.APPS_KEY), false, settingObserver);
+            root.getContext().getContentResolver().registerContentObserver(
+                    Settings.Global.getUriFor(ShortcutStore.KEY), false, settingObserver);
+            for (RingConfig ring : new RingConfig[]{RingConfig.OUTER, RingConfig.INNER}) {
+                for (String key : new String[]{ShortcutStore.key(ring.ring), ring.enableKey, ring.recentKey,
+                        ring.countKey, ring.iconKey}) root.getContext().getContentResolver()
+                        .registerContentObserver(Settings.Global.getUriFor(key), false, settingObserver);
+            }
             Class<?> listenerClass = Class.forName("android.view.ViewTreeObserver$OnComputeInternalInsetsListener");
             insetsListener = Proxy.newProxyInstance(listenerClass.getClassLoader(),
                     new Class<?>[]{listenerClass}, (proxy, method, args) -> {
@@ -355,10 +381,12 @@ public final class MBackHook implements IXposedHookLoadPackage {
                     "addOnComputeInternalInsetsListener", listenerClass);
             add.setAccessible(true);
             add.invoke(root.getViewTreeObserver(), insetsListener);
-            root.requestLayout();
+            ShadeVisibility.addListener(onShadeChange);
         }
 
         void detach() {
+            backEvents.shutdownNow();
+            ShadeVisibility.removeListener(onShadeChange);
             if (cornerMonitor != null) cornerMonitor.stop();
             if (cornerMenu != null) cornerMenu.hide();
             restoreHandle();
@@ -376,12 +404,12 @@ public final class MBackHook implements IXposedHookLoadPackage {
         }
 
         private boolean readEnabled() {
-            return Settings.Global.getInt(root.getContext().getContentResolver(), SETTING, 0) == 1;
+            return Settings.Global.getInt(root.getContext().getContentResolver(), SETTING, DEFAULT_ENABLED) == 1;
         }
 
         private boolean readCornerEnabled() {
             return Settings.Global.getInt(root.getContext().getContentResolver(),
-                    CornerAppMenu.ENABLE_KEY, 0) == 1;
+                    CornerAppMenu.ENABLE_KEY, CornerAppMenu.DEFAULT_ENABLED) == 1;
         }
 
         private void loadFeedbackSettings() {
@@ -482,13 +510,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
             try {
                 Vibrator vibrator = (Vibrator) root.getContext().getSystemService(
                         android.content.Context.VIBRATOR_SERVICE);
-                if (vibrator != null && vibrator.hasVibrator()) {
-                    vibrator.vibrate(VibrationEffect.createOneShot(
-                            FeedbackConfig.vibrationDuration(level),
-                            vibrator.hasAmplitudeControl()
-                                    ? FeedbackConfig.vibrationAmplitude(level)
-                                    : VibrationEffect.DEFAULT_AMPLITUDE));
-                }
+                TouchFeedback.play(vibrator, level);
             } catch (Throwable error) {
                 XposedBridge.log(TAG + " vibration unavailable: " + error);
             }
@@ -496,7 +518,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
 
         private void updateInsets(Object info) {
             try {
-                if (!root.isShown() || !active) {
+                if (!root.isShown() || !active || ShadeVisibility.isExpanded()) {
                     hitRect.setEmpty();
                     return;
                 }
@@ -517,11 +539,6 @@ public final class MBackHook implements IXposedHookLoadPackage {
         private Rect calculateHitRect() {
             int w = root.getWidth(), h = root.getHeight();
             if (w == 0 || h == 0) return new Rect();
-            // The system navigation window itself is only ~44dp thick on PLK110.
-            // The old handle-centered rectangle left a 19px unprotected strip below
-            // the white bar, sending those touches directly to the app underneath.
-            // Cover the FULL short axis of this real SystemUI window (never an
-            // application overlay), while limiting the long axis to the handle area.
             boolean horizontal = w >= h;
             int center = (horizontal ? w : h) / 2;
             View handle = findHandle(root);
@@ -536,7 +553,8 @@ public final class MBackHook implements IXposedHookLoadPackage {
                 int length = horizontal ? w : h;
                 if (candidate >= 0 && candidate < length) center = candidate;
             }
-            int[] bounds = HitZone.bounds(w, h, center);
+            // ColorOS's input window extends above the inset reported to applications.
+            int[] bounds = HitZone.bounds(w, h, center, CornerTouchShield.navigationHeight(root.getContext()));
             return new Rect(bounds[0], bounds[1], bounds[2], bounds[3]);
         }
 
@@ -560,13 +578,27 @@ public final class MBackHook implements IXposedHookLoadPackage {
         }
 
         boolean dispatch(MotionEvent event) {
-            if (!active) return false;
+            if (!active || ShadeVisibility.isExpanded()) return false;
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
                 if (!hitRect.contains((int) event.getX(), (int) event.getY())) return false;
             } else if (!pressed) {
                 return false;
             }
             return onTouch(root, event);
+        }
+
+        void observeShadeTouch(MotionEvent event) {
+            if (!active || !ShadeVisibility.isExpanded()) return;
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                pressed = false;
+                int[] location = new int[2];
+                root.getLocationOnScreen(location);
+                if (!root.isShown() || !calculateHitRect().contains(
+                        (int) event.getRawX() - location[0],
+                        (int) event.getRawY() - location[1])) return;
+            } else if (!pressed) return;
+            // Observe taps without claiming the strip needed by native shade swipes.
+            onTouch(root, event);
         }
 
         @Override public boolean onTouch(View view, MotionEvent event) {
@@ -578,7 +610,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                     moved = false;
                     downX = event.getX();
                     downY = event.getY();
-                    downAt = event.getEventTime();
+                    downAt = event.getDownTime();
                     return true;
                 case MotionEvent.ACTION_POINTER_DOWN:
                     moved = true;
@@ -588,13 +620,13 @@ public final class MBackHook implements IXposedHookLoadPackage {
                             Math.abs(event.getY() - downY) > dp(22)) moved = true;
                     return true;
                 case MotionEvent.ACTION_UP:
-                    if (pressed && !moved && event.getEventTime() - downAt <= 380
-                            && event.getEventTime() - lastBackAt > 280) {
-                        lastBackAt = event.getEventTime();
+                    boolean tap = pressed && !moved && event.getDownTime() == downAt
+                            && event.getEventTime() - downAt >= 0 && event.getEventTime() - downAt <= 380;
+                    pressed = false;
+                    if (tap) {
                         playTapFeedback();
                         injectBack();
                     }
-                    pressed = false;
                     return true;
                 case MotionEvent.ACTION_CANCEL:
                     pressed = false;
@@ -607,7 +639,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
         private void injectBack() {
             // SystemUI already has android.permission.INJECT_EVENTS on this device.
             // No root daemon and no shell command on every tap.
-            new Thread(() -> {
+            backEvents.execute(() -> {
                 try {
                     Class<?> managerClass = Class.forName("android.hardware.input.InputManagerGlobal");
                     Object manager = XposedHelpers.callStaticMethod(managerClass, "getInstance");
@@ -626,7 +658,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                 } catch (Throwable t) {
                     XposedBridge.log(TAG + " inject BACK failed: " + t);
                 }
-            }, "mback-back").start();
+            });
         }
     }
 }
