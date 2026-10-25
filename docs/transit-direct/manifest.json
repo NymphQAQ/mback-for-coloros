@@ -1,0 +1,91 @@
+{
+  "purpose": "Restore the tested Assistant-independent transit shortcut implementation without changing saved shortcut IDs or icons.",
+  "baseline_commit": "6fc7fdae67d9e0656bb0677974ef701393d71638",
+  "baseline_version": "0.7.0 (25)",
+  "restored_snapshot_version": "0.7.1 (26)",
+  "historical_validation_date": "2026-10-25",
+  "historical_device": "OnePlus 15 / ColorOS 17 / Android 17",
+  "historical_wechat_version": "8.0.79 (3200)",
+  "historical_apk_sha256": "e7d7e6b8b4d21c97dd30085a9518bf24d512289ff411bfb8944672e972300f31",
+  "historical_dex_sha256": "1e3ae805929c6802e71883f2d0200e9df6c5ee2a2034b0b71c7f13c47d17c070",
+  "patch_sha256": "b78185c4794248289bc0c634a5f4e34bd0d157ee42ca536e40763dac7d86971c",
+  "files": [
+    {
+      "path": "app/build.gradle",
+      "change": "modify",
+      "mode": "100644",
+      "baseline_sha256": "26ee72d0de05bdaa5a26c0d00482154cb930fb4a3996f675c4d4c817cd9c78f2",
+      "restored_sha256": "8093d6ce932af35ea5c39cef41a9e80da24941a2c34d44c2473b2749044fe8ac"
+    },
+    {
+      "path": "app/src/main/AndroidManifest.xml",
+      "change": "modify",
+      "mode": "100644",
+      "baseline_sha256": "174a02e07a2908a88684869b014161a62b5cea3d430e8deca1f2216a71749e6b",
+      "restored_sha256": "5d907a44075b7393eedc8fe18095599abda5a72f0e597fa990d49982185405fb"
+    },
+    {
+      "path": "app/src/main/java/dev/mback/oneplus/FreeformLauncher.java",
+      "change": "modify",
+      "mode": "100644",
+      "baseline_sha256": "965551715f91af86c73939f0d827a86e955942bc65c48f874443799ec8a36c08",
+      "restored_sha256": "b3fd420181b450edda2f2b8e50b4c8f559462502484d948efec10fcbd262e0db"
+    },
+    {
+      "path": "app/src/main/java/dev/mback/oneplus/MBackHook.java",
+      "change": "modify",
+      "mode": "100644",
+      "baseline_sha256": "8d497dfe7c57466409bdad29e98dc5e484ba9f787eeabdc4ca5afe355d6f580a",
+      "restored_sha256": "8f07dfd2445b1afee229dc1315f6e2be61a82801c61aa2e8c6b1ee2b8d77f4b3"
+    },
+    {
+      "path": "app/src/main/java/dev/mback/oneplus/PresetShortcut.java",
+      "change": "modify",
+      "mode": "100644",
+      "baseline_sha256": "0dcdfa9f4d6367fcf4478f81ef0cf62ef47e66ab6cb3c9de796b9adc9b667d87",
+      "restored_sha256": "0620c9dc4a318d46ab4d57792d7c706bbef9dc89650155f1a5dc4e76150e4817"
+    },
+    {
+      "path": "app/src/main/java/dev/mback/oneplus/WechatTransit.java",
+      "change": "add",
+      "mode": "100644",
+      "baseline_sha256": null,
+      "restored_sha256": "3592eee05339e95b0df21cb48cb894f5f589bbc0ab9cc60bf2633bb9e1e43c94"
+    },
+    {
+      "path": "app/src/main/java/dev/mback/oneplus/WechatTransitActivity.java",
+      "change": "add",
+      "mode": "100644",
+      "baseline_sha256": null,
+      "restored_sha256": "3d5b9154e525a3e0ae71a8435ae9835a1fb0a6228fde0b72406ab67c94179b3b"
+    },
+    {
+      "path": "build-local.sh",
+      "change": "modify",
+      "mode": "100644",
+      "baseline_sha256": "239379a4f2b2210ed361bdfac0cfb1532045ef86926654606dd680b0331769f6",
+      "restored_sha256": "3ce7e9047805f7c37e028e8b2256bcf9b770a20fafa83600ae0e174536a2c32e"
+    },
+    {
+      "path": "tests/activity_shortcuts_test.py",
+      "change": "modify",
+      "mode": "100644",
+      "baseline_sha256": "c694a1f8ea9a57ae938d15ed21fc83a788211b988c1e1ebbc05428b225e5eabc",
+      "restored_sha256": "5e25c521f9b5f66077ee8ade4cb80d05441a29fa4f395a6e2c449159e061ddf7"
+    },
+    {
+      "path": "tests/android/TransitShortcutsInstrumentation.java",
+      "change": "add",
+      "mode": "100644",
+      "baseline_sha256": null,
+      "restored_sha256": "43564b55f3ffded9881005c0af621dbe0373491ecd0ca0c21f0ca58b28f40512"
+    },
+    {
+      "path": "tests/transit_shortcuts_test.py",
+      "change": "add",
+      "mode": "100644",
+      "baseline_sha256": null,
+      "restored_sha256": "cf1ef506a92542586894de7b654adf61104db859f2e40e0c6fe7dadb4f132a1f"
+    }
+  ]
+}

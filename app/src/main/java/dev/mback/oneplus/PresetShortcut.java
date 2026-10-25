@@ -17,11 +17,13 @@ import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
+import android.provider.Settings;
 import android.util.Log;
 import java.io.InputStream;
 
 /** Component IDs also recognize shortcuts added through the activity picker. */
 final class PresetShortcut {
+    static final String TRANSIT_MODE_KEY = "mback_transit_direct";
     static final PresetShortcut[] ALL = {
         new PresetShortcut("微信扫一扫", "com.tencent.mm/com.tencent.mm.plugin.scanner.ui.BaseScanUI", "wechat-scan.png", null),
         new PresetShortcut("微信付款码", "com.tencent.mm/com.tencent.mm.plugin.offline.ui.WalletOfflineEntranceUI", "wechat-payment.png", null),
@@ -49,17 +51,32 @@ final class PresetShortcut {
         return null;
     }
 
+    static boolean directTransit(Context context) {
+        return Settings.Global.getInt(context.getContentResolver(), TRANSIT_MODE_KEY, 0) == 1;
+    }
+
+    boolean isTransit() { return this == ALL[4] || this == ALL[5]; }
+
+    ShortcutTarget launchTarget(boolean direct) {
+        if (!direct || !isTransit()) return target;
+        return ShortcutTarget.parse(this == ALL[4] ? WechatTransit.COMPONENT
+                : "com.eg.android.AlipayGphone/com.alipay.mobile.quinox.SchemeLauncherActivity");
+    }
+
     boolean available(Context context) {
         try {
-            ActivityInfo info = ShortcutStore.activity(context, target);
+            ActivityInfo info = ShortcutStore.activity(context, launchTarget(directTransit(context)));
             return info.enabled && info.applicationInfo.enabled;
         } catch (Exception error) { return false; }
     }
 
-    Intent intent() {
-        Intent intent = new Intent().setComponent(new ComponentName(target.packageName, target.activityName));
-        // Alipay owns the subsequent payment activity chain; transit uses Assistant's dedicated bridges.
-        if (data != null) intent.setAction(Intent.ACTION_VIEW).setData(Uri.parse(data));
+    Intent intent(boolean direct) {
+        ShortcutTarget destination = launchTarget(direct);
+        Intent intent = new Intent().setComponent(new ComponentName(destination.packageName, destination.activityName));
+        String uri = direct && this == ALL[5]
+                ? "alipays://platformapi/startapp?appId=200011235&chInfo=ch_oppo_left&sceneCode=KF_CHANGSHANG&partnerId=ch_oppo_left&pikshemo=YES"
+                : data;
+        if (uri != null) intent.setAction(Intent.ACTION_VIEW).setData(Uri.parse(uri));
         return intent;
     }
 

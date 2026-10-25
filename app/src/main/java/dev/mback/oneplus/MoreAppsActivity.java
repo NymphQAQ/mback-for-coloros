@@ -26,6 +26,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
+import android.view.animation.DecelerateInterpolator;
 import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.EditText;
@@ -145,6 +146,8 @@ public final class MoreAppsActivity extends Activity {
         panel.addView(hint);
         setContentView(panel);
         getContentResolver().registerContentObserver(Settings.Global.getUriFor(ArcConfig.ORIGINAL_ICON_KEY),
+                false, iconShapeObserver);
+        getContentResolver().registerContentObserver(Settings.Global.getUriFor(PresetShortcut.TRANSIT_MODE_KEY),
                 false, iconShapeObserver);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
                 | WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
@@ -278,6 +281,8 @@ public final class MoreAppsActivity extends Activity {
         GridLayout grid = new GridLayout(this);
         grid.setColumnCount(4);
         grid.setAlignmentMode(GridLayout.ALIGN_BOUNDS);
+        grid.setClipChildren(false);
+        grid.setClipToPadding(false);
         return grid;
     }
 
@@ -373,42 +378,55 @@ public final class MoreAppsActivity extends Activity {
     }
 
     private void enableReordering(GridLayout grid) {
-        int[] hovered = {-1};
+        int[] from = {-1}, hovered = {-1};
+        boolean[] dropped = {false};
+        GradientDrawable marker = shape(MainActivity.GREEN, 2);
         grid.setOnDragListener((view, event) -> {
             Object source = event.getLocalState();
             if (!(source instanceof String) || !selected.containsKey(source)) return false;
             switch (event.getAction()) {
                 case DragEvent.ACTION_DRAG_STARTED:
+                    from[0] = new ArrayList<>(selected.keySet()).indexOf(source);
+                    hovered[0] = from[0];
+                    dropped[0] = false;
                     for (int i = 0; i < selected.size(); i++) {
                         View tile = grid.getChildAt(i);
-                        tile.setAlpha(source.equals(tile.getTag()) ? .35f : 1f);
+                        tile.animate().cancel();
+                        tile.setAlpha(i == from[0] ? 0f : 1f);
                     }
+                    previewOrder(grid, from[0], from[0]);
+                    grid.getOverlay().add(marker);
+                    showInsertion(grid, marker, from[0]);
                     return true;
                 case DragEvent.ACTION_DRAG_ENTERED:
                 case DragEvent.ACTION_DRAG_LOCATION:
+                    if (dropped[0]) return true;
                     int position = dropPosition(grid, event);
                     if (position != hovered[0]) {
                         hovered[0] = position;
-                        for (int i = 0; i < selected.size(); i++) grid.getChildAt(i).setBackground(
-                                i == position ? shape(MainActivity.PALE, 12) : null);
+                        previewOrder(grid, from[0], position);
                     }
+                    showInsertion(grid, marker, position);
                     return true;
                 case DragEvent.ACTION_DROP:
-                    ArrayList<String> ids = new ArrayList<>(selected.keySet());
-                    int from = ids.indexOf(source), to = dropPosition(grid, event);
-                    if (from != to && to >= 0) {
+                    int to = dropPosition(grid, event);
+                    dropped[0] = true;
+                    grid.getOverlay().remove(marker);
+                    settleOrder(grid, from[0], to, event.getX(), event.getY());
+                    if (from[0] != to && to >= 0) {
                         ArrayList<ShortcutStore.Item> ordered = new ArrayList<>(selected.values());
-                        ordered.add(to, ordered.remove(from));
+                        ordered.add(to, ordered.remove(from[0]));
                         selected.clear();
                         for (ShortcutStore.Item item : ordered) selected.put(item.target.id(), item);
-                        refresh();
+                        saveChanges();
                     }
                     return true;
                 case DragEvent.ACTION_DRAG_EXITED:
                 case DragEvent.ACTION_DRAG_ENDED:
-                    hovered[0] = -1;
+                    hovered[0] = from[0];
+                    grid.getOverlay().remove(marker);
                     for (int i = 0; i < grid.getChildCount(); i++) {
-                        grid.getChildAt(i).setBackground(null);
+                        if (!dropped[0]) moveTile(grid.getChildAt(i), 0f, 0f);
                         if (event.getAction() == DragEvent.ACTION_DRAG_ENDED) grid.getChildAt(i).setAlpha(1f);
                     }
                     return true;
@@ -416,6 +434,64 @@ public final class MoreAppsActivity extends Activity {
                     return true;
             }
         });
+    }
+
+    private void moveTile(View tile, float x, float y) {
+        tile.animate().cancel();
+        tile.animate().translationX(x).translationY(y).setDuration(180)
+                .setInterpolator(new DecelerateInterpolator(1.7f)).withLayer().start();
+    }
+
+    private void previewOrder(GridLayout grid, int from, int to) {
+        for (int i = 0; i < selected.size(); i++) {
+            if (i == from) continue;
+            int slot = i;
+            if (from < to && i > from && i <= to) slot--;
+            else if (from > to && i >= to && i < from) slot++;
+            View tile = grid.getChildAt(i), destination = grid.getChildAt(slot);
+            moveTile(tile, destination.getLeft() - tile.getLeft(), destination.getTop() - tile.getTop());
+        }
+    }
+
+    private void showInsertion(GridLayout grid, GradientDrawable marker, int position) {
+        View slot = grid.getChildAt(position);
+        int x = slot.getLeft() + slot.getWidth() / 2;
+        marker.setBounds(x - dp(1), slot.getTop() + dp(14), x + dp(1), slot.getTop() + dp(55));
+        grid.invalidate();
+    }
+
+    private void settleOrder(GridLayout grid, int from, int to, float dropX, float dropY) {
+        ArrayList<View> before = new ArrayList<>();
+        float[] x = new float[grid.getChildCount()], y = new float[grid.getChildCount()];
+        for (int i = 0; i < grid.getChildCount(); i++) {
+            View tile = grid.getChildAt(i);
+            tile.animate().cancel();
+            before.add(tile);
+            x[i] = i == from ? dropX - tile.getWidth() * .5f : tile.getX();
+            y[i] = i == from ? dropY - tile.getHeight() * .5f : tile.getY();
+        }
+        ArrayList<View> after = new ArrayList<>(before);
+        after.add(to, after.remove(from));
+        // Reuse the tiles and their current positions instead of rebuilding the whole app list.
+        grid.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+            @Override public void onLayoutChange(View v, int l, int t, int r, int b, int ol, int ot, int or, int ob) {
+                grid.removeOnLayoutChangeListener(this);
+                for (View tile : after) {
+                    int i = before.indexOf(tile);
+                    tile.setTranslationX(x[i] - tile.getLeft());
+                    tile.setTranslationY(y[i] - tile.getTop());
+                    tile.setAlpha(1f);
+                    moveTile(tile, 0f, 0f);
+                }
+            }
+        });
+        grid.removeAllViews();
+        for (View tile : after) {
+            GridLayout.LayoutParams lp = (GridLayout.LayoutParams) tile.getLayoutParams();
+            lp.rowSpec = GridLayout.spec(GridLayout.UNDEFINED);
+            lp.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f);
+            grid.addView(tile, lp);
+        }
     }
 
     private void showActivities(String pkg) {

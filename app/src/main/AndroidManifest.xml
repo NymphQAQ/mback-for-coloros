@@ -11,6 +11,11 @@
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
         </activity>
         <activity android:name=".TestActivity" android:exported="false"/>
+        <activity android:name=".WechatTransitActivity" android:exported="true"
+                  android:permission="android.permission.STATUS_BAR"
+                  android:theme="@android:style/Theme.NoDisplay"
+                  android:excludeFromRecents="true" android:noHistory="true"
+                  android:taskAffinity="dev.mback.oneplus.transit"/>
         <!-- SystemUI opens this parameter-free activity in a separate native small-window task. -->
         <activity android:name=".MoreAppsActivity" android:exported="true"
                   android:label="更多应用" android:resizeableActivity="true"

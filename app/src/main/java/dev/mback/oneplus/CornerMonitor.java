@@ -133,7 +133,7 @@ final class CornerMonitor {
                 } else if (action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_POINTER_DOWN) {
                     side = CornerGesture.NONE;
                     downTime = -1;
-                    menu.hide();
+                    menu.dismiss();
                 }
                 return;
             }

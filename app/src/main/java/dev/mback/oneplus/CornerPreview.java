@@ -1,6 +1,8 @@
 package dev.mback.oneplus;
 
 import android.animation.ValueAnimator;
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -29,9 +31,9 @@ final class CornerPreview extends View {
     private CornerRingGeometry arc;
     private float scale, left, top, crop, reveal, downX, downY, cornerRadius;
     private int side = CornerGesture.RIGHT, armed;
-    private boolean opened, held;
+    private boolean opened, held, closing;
     private ValueAnimator animation;
-    private final Runnable dismiss = () -> { opened = false; reveal = 0; invalidate(); };
+    private final Runnable dismiss = this::close;
 
     CornerPreview(Context context) {
         super(context);
@@ -40,7 +42,7 @@ final class CornerPreview extends View {
         manualInnerCount = ShortcutStore.read(context, 2).size();
         density = context.getResources().getDisplayMetrics().density;
         ((WindowManager) context.getSystemService(Context.WINDOW_SERVICE)).getDefaultDisplay().getRealSize(screen);
-        setContentDescription("呼出范围预览，彩色区域可斜滑，双击播放呼出动画");
+        setContentDescription("呼出范围预览，彩色区域可斜滑，播放呼出与收回动画");
         setClickable(true);
         setFocusable(true);
         setOnClickListener(v -> replay());
@@ -78,8 +80,7 @@ final class CornerPreview extends View {
     }
 
     private void startFlight() {
-        removeCallbacks(dismiss);
-        if (animation != null) animation.cancel();
+        reset();
         opened = true;
         reveal = 0;
         int duration = CornerPreferences.animationDuration(read(CornerPreferences.ANIMATION_KEY,
@@ -92,6 +93,29 @@ final class CornerPreview extends View {
         animation.start();
     }
 
+    private void close() {
+        if (!opened || closing) return;
+        if (animation == null || reveal <= 0) { reset(); return; }
+        held = false;
+        closing = true;
+        animation.addListener(new AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(Animator animator) {
+                if (animation == animator) reset();
+            }
+        });
+        animation.reverse();
+    }
+
+    private void reset() {
+        removeCallbacks(dismiss);
+        ValueAnimator old = animation;
+        animation = null;
+        if (old != null) old.cancel();
+        opened = held = closing = false;
+        reveal = 0;
+        invalidate();
+    }
+
     @Override public boolean onTouchEvent(MotionEvent e) {
         if (scale <= 0) return true;
         float x = (e.getX() - left) / scale, y = (e.getY() - top) / scale + crop;
@@ -99,7 +123,7 @@ final class CornerPreview extends View {
             case MotionEvent.ACTION_DOWN:
                 removeCallbacks(dismiss);
                 if (held) { held = false; dismiss.run(); return true; }
-                dismiss.run();
+                reset();
                 armed = region().origin(x, y);
                 float inward = Math.min(x, screen.x - x), up = screen.y - y;
                 if (inward < cornerRadius && up < cornerRadius
@@ -118,7 +142,7 @@ final class CornerPreview extends View {
                 }
                 break;
             case MotionEvent.ACTION_UP:
-                if (opened) {
+                if (opened && !closing) {
                     held = read(CornerPreferences.KEEP_OPEN_KEY, 0) == 1;
                     if (held && animation != null) animation.end();
                     if (!held) postDelayed(dismiss, 1000);
@@ -217,8 +241,7 @@ final class CornerPreview extends View {
     }
 
     @Override protected void onDetachedFromWindow() {
-        removeCallbacks(dismiss);
-        if (animation != null) animation.cancel();
+        reset();
         super.onDetachedFromWindow();
     }
 }

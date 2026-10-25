@@ -22,6 +22,8 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.Switch;
@@ -35,9 +37,9 @@ public final class MainActivity extends Activity {
     static final int INK = 0xFF183F32, MUTED = 0xFF5D6C62, BACKGROUND = 0xFFF4F6F3;
     static final int GREEN = 0xFF28684E, PALE = 0xFFE1F0E7, BORDER = 0xFFE6EBE5;
     private static final int MOTION = 1, HAPTICS = 2, INTERACTION = 3, LAYOUT = 4,
-            ICONS = 5, OUTER = 6, INNER = 7;
+            ICONS = 5, OUTER = 6, INNER = 7, TRANSIT = 8;
     private static final String[] DETAIL_TITLES = {"", "动作反馈", "触觉反馈", "呼出与交互",
-            "圆弧布局", "图标与触感", "外圈设置", "内圈设置"};
+            "圆弧布局", "图标与触感", "外圈设置", "内圈设置", "乘车码启动方式"};
     private final ArrayList<Runnable> readers = new ArrayList<>();
     private final ScrollView[] pages = new ScrollView[2];
     private final Button[] tabs = new Button[2];
@@ -119,7 +121,7 @@ public final class MainActivity extends Activity {
         refresh();
         if (state != null) {
             int page = state.getInt("detail");
-            if (page >= MOTION && page <= INNER) {
+            if (page >= MOTION && page <= TRANSIT) {
                 openSettings(page);
                 int scrollY = state.getInt("detail_scroll");
                 ScrollView restored = detailPage;
@@ -238,6 +240,9 @@ public final class MainActivity extends Activity {
         entry(apps, "外圈设置", () -> ringSummary(RingConfig.OUTER), () -> openSettings(OUTER));
         divider(apps);
         entry(apps, "内圈设置", () -> ringSummary(RingConfig.INNER), () -> openSettings(INNER));
+        divider(apps);
+        entry(apps, "乘车码启动方式", () -> PresetShortcut.directTransit(this) ? "直接小窗启动" : "负一屏启动（默认）",
+                () -> openSettings(TRANSIT));
 
         section(body, "手势与外观");
         LinearLayout settings = card(body);
@@ -260,6 +265,34 @@ public final class MainActivity extends Activity {
                 : "手动已选 " + ShortcutStore.read(this, ring.ring).size() + " 个";
         int count = Math.max(1, Math.min(RingConfig.MAX_APPS, readGlobal(ring.countKey, ring.defaultCount)));
         return source + " · 最多显示 " + count + " 个";
+    }
+
+    private void transitControls(LinearLayout body) {
+        LinearLayout choices = card(body);
+        RadioGroup modes = new RadioGroup(this);
+        String[] labels = {"负一屏启动（默认）", "直接小窗启动"};
+        String[] hints = {"需要负一屏正常工作。使用负一屏提供的入口，打开后再转为系统小窗，可能先短暂全屏。",
+                "无需负一屏，直接以系统小窗打开。微信使用内部启动协议，更新后可能需要适配；当前已验证微信 8.0.79。"};
+        int[] ids = new int[2];
+        for (int i = 0; i < labels.length; i++) {
+            RadioButton choice = new RadioButton(this);
+            ids[i] = View.generateViewId();
+            choice.setId(ids[i]);
+            choice.setText(labels[i] + "\n" + hints[i]);
+            choice.setTextSize(14);
+            choice.setTextColor(INK);
+            choice.setButtonTintList(new ColorStateList(new int[][]{{android.R.attr.state_checked}, {}},
+                    new int[]{GREEN, MUTED}));
+            choice.setPadding(0, dp(20), 0, dp(20));
+            choice.setMinimumHeight(dp(96));
+            modes.addView(choice, new RadioGroup.LayoutParams(-1, -2));
+        }
+        choices.addView(modes);
+        readers.add(() -> modes.check(ids[PresetShortcut.directTransit(this) ? 1 : 0]));
+        modes.setOnCheckedChangeListener((group, id) -> {
+            if (!switching) writeGlobal(PresetShortcut.TRANSIT_MODE_KEY, id == ids[1] ? 1 : 0, "乘车码启动方式");
+        });
+        footer(body, "同时应用于微信、支付宝乘车码；下次打开生效，无需重启。扫一扫和付款码不受影响。直接启动失败时，可切回负一屏启动。");
     }
 
     private void interactionControls(LinearLayout body) {
@@ -351,6 +384,7 @@ public final class MainActivity extends Activity {
             case ICONS: iconControls(body); break;
             case OUTER: ringControls(body, RingConfig.OUTER); break;
             case INNER: ringControls(body, RingConfig.INNER); break;
+            case TRANSIT: transitControls(body); break;
         }
         footer(body, "更改自动保存，返回无需确认。");
         scroll.addView(body);

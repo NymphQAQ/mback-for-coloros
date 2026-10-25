@@ -1,6 +1,9 @@
 package dev.mback.oneplus;
 
 import android.animation.ValueAnimator;
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
+import android.app.KeyguardManager;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -96,8 +99,8 @@ final class CornerAppMenu {
     }
 
     boolean isOpened() { return view != null; }
-    boolean isGestureActive() { return view != null && !view.latched; }
-    boolean isLatched() { return view != null && view.latched; }
+    boolean isGestureActive() { return view != null && !view.latched && !view.closing; }
+    boolean isLatched() { return view != null && view.latched && !view.closing; }
 
     void showForGesture(int side, IconFlight trail) {
         hide();
@@ -147,14 +150,14 @@ final class CornerAppMenu {
 
     void highlightBySwipe(float rawX, float rawY) {
         RowView showing = view;
-        if (showing == null) return;
+        if (showing == null || showing.closing) return;
         showing.select(rawX, rawY);
     }
 
     /** Called exactly once for the matching finger UP, even over empty space. */
     void finishGesture(float rawX, float rawY, long releasedAt) {
         RowView showing = view;
-        if (showing == null || showing.latched) return;
+        if (showing == null || showing.latched || showing.closing) return;
         if (showing.getWidth() == 0) {
             showing.postOnAnimation(() -> { if (view == showing) finishGesture(rawX, rawY, releasedAt); });
             return;
@@ -181,24 +184,43 @@ final class CornerAppMenu {
             }
             return;
         }
-        hide();
+        dismiss();
     }
 
     private void openPosition(int position) {
         RowView showing = view;
-        if (showing == null) return;
+        if (showing == null || showing.closing) return;
         AppItem selected = position > 0 && position < showing.positionCount() ? showing.appAt(position) : null;
         boolean more = position == FlymeArcGeometry.MORE_POSITION;
-        // Release the window BEFORE starting any activity to prevent overlays
-        // from sitting on top of native ColorOS window transitions.
-        hide();
-        if (selected != null) {
-            launcher.open(selected.target);
-            XposedBridge.log(TAG + " opened shortcut " + selected.target.id());
-        } else if (more) {
-            FreeformLauncher.openMore(context);
-        } else {
-            XposedBridge.log(TAG + " released on empty space; row dismissed");
+        dismiss(() -> {
+            if (selected != null) {
+                launcher.open(selected.target);
+                XposedBridge.log(TAG + " opened shortcut " + selected.target.id());
+            } else if (more) FreeformLauncher.openMore(context);
+        });
+    }
+
+    void dismiss() { dismiss(null); }
+
+    private void dismiss(Runnable action) {
+        RowView showing = view;
+        if (showing == null || showing.closing) return;
+        Runnable finished = () -> {
+            if (view != showing) return;
+            hide();
+            KeyguardManager keyguard = context.getSystemService(KeyguardManager.class);
+            if (action != null && !ShadeVisibility.isExpanded() && (keyguard == null || !keyguard.isDeviceLocked()))
+                action.run();
+        };
+        try {
+            // Stop intercepting input now, and remove the overlay before launching the selected app.
+            WindowManager.LayoutParams lp = (WindowManager.LayoutParams) showing.getLayoutParams();
+            lp.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+            windowManager.updateViewLayout(showing, lp);
+            showing.exit(finished);
+        } catch (Throwable error) {
+            XposedBridge.log(TAG + " dismiss animation failed: " + error);
+            finished.run();
         }
     }
 
@@ -351,7 +373,7 @@ final class CornerAppMenu {
         private final float[] flightPoint = new float[2];
         private final int dim;
         private final int animationDuration;
-        private boolean latched;
+        private boolean latched, closing;
         private final int touchSlop;
         private long releasedAt, touchDownTime = -1;
         private float touchX, touchY;
@@ -393,18 +415,39 @@ final class CornerAppMenu {
 
         void enter() {
             if (animationDuration == 0) { reveal = 1f; invalidate(); return; }
-            animation = ValueAnimator.ofFloat(0f, 1f);
-            animation.setDuration(animationDuration);
-            animation.setInterpolator(new DecelerateInterpolator(1.7f));
-            animation.addUpdateListener(a -> {
-                reveal = (Float) a.getAnimatedValue();
-                postInvalidateOnAnimation();
-            });
+            animation = flightAnimation();
             animation.start();
         }
 
+        private ValueAnimator flightAnimation() {
+            ValueAnimator animator = ValueAnimator.ofFloat(0f, 1f);
+            animator.setDuration(animationDuration);
+            animator.setInterpolator(new DecelerateInterpolator(1.7f));
+            animator.addUpdateListener(a -> {
+                reveal = (Float) a.getAnimatedValue();
+                postInvalidateOnAnimation();
+            });
+            return animator;
+        }
+
         void stop() {
-            if (animation != null) animation.cancel();
+            ValueAnimator old = animation;
+            animation = null;
+            if (old != null) old.cancel();
+        }
+
+        void exit(Runnable finished) {
+            closing = true;
+            if (animationDuration == 0 || reveal <= 0) { finished.run(); return; }
+            if (animation == null) animation = flightAnimation();
+            animation.addListener(new AnimatorListenerAdapter() {
+                @Override public void onAnimationEnd(Animator animator) {
+                    if (animation != animator) return;
+                    animation = null;
+                    finished.run();
+                }
+            });
+            animation.reverse();
         }
 
         void latch(long releasedAt) {
@@ -439,7 +482,7 @@ final class CornerAppMenu {
         }
 
         @Override public boolean onTouchEvent(MotionEvent event) {
-            if (!latched) return false;
+            if (!latched || closing) return false;
             int action = event.getActionMasked();
             if (action == MotionEvent.ACTION_DOWN) {
                 // Ignore the original stroke when the window becomes touchable.
@@ -451,7 +494,7 @@ final class CornerAppMenu {
                 select(touchX, touchY);
                 return true;
             }
-            if (action == MotionEvent.ACTION_POINTER_DOWN) { hide(); return true; }
+            if (action == MotionEvent.ACTION_POINTER_DOWN) { dismiss(); return true; }
             if (touchDownTime < 0 || event.getDownTime() != touchDownTime) return true;
             if (Math.hypot(event.getRawX() - touchX, event.getRawY() - touchY) > touchSlop)
                 touchMoved = true;
@@ -472,11 +515,11 @@ final class CornerAppMenu {
             return true;
         }
 
-        @Override public boolean performClick() { super.performClick(); hide(); return true; }
+        @Override public boolean performClick() { super.performClick(); dismiss(); return true; }
 
         @Override public boolean dispatchKeyEvent(KeyEvent event) {
             if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
-                if (event.getAction() == KeyEvent.ACTION_UP) hide();
+                if (event.getAction() == KeyEvent.ACTION_UP) dismiss();
                 return true;
             }
             return super.dispatchKeyEvent(event);

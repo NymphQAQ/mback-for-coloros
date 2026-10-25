@@ -1,0 +1,505 @@
+diff --git a/app/build.gradle b/app/build.gradle
+index 94f0a1b7f3509e16c5941d8b2ddb1a908eb4d9ea..92209dfb6d3efbed7b66e2a8484425a3b20c9f01 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -3,5 +3,5 @@
+ android {
+     namespace 'dev.mback.oneplus'
+     compileSdk 35
+-    defaultConfig { applicationId 'dev.mback.oneplus'; minSdk 29; targetSdk 35; versionCode 25; versionName '0.7.0' }
++    defaultConfig { applicationId 'dev.mback.oneplus'; minSdk 29; targetSdk 35; versionCode 26; versionName '0.7.1' }
+ }
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index af15af679e4e1e23691da172006d82e4b45ed64c..e8c202ef7d48b15a7abb7cdd066bfc896914a993 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -17,6 +17,9 @@
+                   android:taskAffinity="dev.mback.oneplus.shortcuts" android:launchMode="singleTask"/>
+         <provider android:name=".ShortcutProvider" android:authorities="dev.mback.oneplus.shortcuts"
+                   android:exported="true"/>
++        <activity android:name=".WechatTransitActivity" android:exported="true"
++                  android:permission="android.permission.STATUS_BAR" android:theme="@android:style/Theme.NoDisplay"
++                  android:excludeFromRecents="true" android:noHistory="true" android:taskAffinity="dev.mback.oneplus.transit"/>
+         <receiver android:name=".BootReceiver" android:exported="false">
+             <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/></intent-filter>
+         </receiver>
+diff --git a/app/src/main/java/dev/mback/oneplus/FreeformLauncher.java b/app/src/main/java/dev/mback/oneplus/FreeformLauncher.java
+index 7c2fc3018bae50e3a9d2d46cd7a9d3bfef12a68e..589a92917e14e2c324cbe0e732530fd29f158e6a 100644
+--- a/app/src/main/java/dev/mback/oneplus/FreeformLauncher.java
++++ b/app/src/main/java/dev/mback/oneplus/FreeformLauncher.java
+@@ -30,7 +30,19 @@
+     private void open(ShortcutTarget target, int ring) {
+         try {
+             Intent launch;
+-            if (target.activityName == null) {
++            PresetShortcut preset = PresetShortcut.find(target);
++            if (preset != null) {
++                if (preset.isWechatTransit()) {
++                    WechatTransit.request(context);
++                    Log.i(TAG, "Direct WeChat transit start requested");
++                    return;
++                }
++                if (!preset.available(context)) {
++                    message(context, "此功能不可用，请确认应用已安装且活动已启用");
++                    return;
++                }
++                launch = preset.intent();
++            } else if (target.activityName == null) {
+                 launch = context.getPackageManager().getLaunchIntentForPackage(target.packageName);
+             } else {
+                 ActivityInfo info = ShortcutStore.activity(context, target);
+@@ -38,9 +50,7 @@
+                     message(context, "此活动已停用，无法打开");
+                     return;
+                 }
+-                PresetShortcut preset = PresetShortcut.find(target);
+-                launch = preset == null ? new Intent().setComponent(new ComponentName(target.packageName, target.activityName))
+-                        : preset.intent();
++                launch = new Intent().setComponent(new ComponentName(target.packageName, target.activityName));
+             }
+             if (launch == null) {
+                 message(context, "找不到此应用的启动入口");
+diff --git a/app/src/main/java/dev/mback/oneplus/MBackHook.java b/app/src/main/java/dev/mback/oneplus/MBackHook.java
+index f29bdfc2243d4db7727aed9bc0cdfdf6777fd6d6..ea2ff698fa5f27629a95c9f56dcdd70abaef222d 100644
+--- a/app/src/main/java/dev/mback/oneplus/MBackHook.java
++++ b/app/src/main/java/dev/mback/oneplus/MBackHook.java
+@@ -86,7 +86,7 @@
+                 if (param.thisObject instanceof ViewGroup) detach((ViewGroup) param.thisObject);
+             }
+         });
+-        XposedBridge.log(TAG + " v0.7.0-phone-defaults registered: " + cls.getName()
++        XposedBridge.log(TAG + " v0.7.1-direct-transit registered: " + cls.getName()
+                 + " dispatch=" + dispatchOwner.getName());
+     }
+ 
+diff --git a/app/src/main/java/dev/mback/oneplus/PresetShortcut.java b/app/src/main/java/dev/mback/oneplus/PresetShortcut.java
+index ad4f5f6faca65dd710854103bcc0ff0ad616a60f..7ba8d9523cded19a2d38b05dcc48a6f2bd78380b 100644
+--- a/app/src/main/java/dev/mback/oneplus/PresetShortcut.java
++++ b/app/src/main/java/dev/mback/oneplus/PresetShortcut.java
+@@ -20,7 +20,7 @@
+ import android.util.Log;
+ import java.io.InputStream;
+ 
+-/** Component IDs also recognize shortcuts added through the activity picker. */
++/** Old component IDs remain stable even when a preset's launch route changes. */
+ final class PresetShortcut {
+     static final PresetShortcut[] ALL = {
+         new PresetShortcut("微信扫一扫", "com.tencent.mm/com.tencent.mm.plugin.scanner.ui.BaseScanUI", "wechat-scan.png", null),
+@@ -28,18 +28,27 @@
+         new PresetShortcut("支付宝扫一扫", "com.eg.android.AlipayGphone/com.alipay.mobile.scan.as.main.MainCaptureActivity", "alipay-scan.png", null),
+         new PresetShortcut("支付宝付款码", "com.eg.android.AlipayGphone/com.alipay.mobile.quinox.SchemeLauncherActivity", "alipay-payment.webp",
+                 "alipays://platformapi/startapp?appId=20000056"),
+-        new PresetShortcut("微信乘车码", "com.coloros.assistantscreen/com.oplus.assistantscreen.flamingo.trafficcode.WxTrafficCodeActivity", "wechat-transit.png", null),
+-        new PresetShortcut("支付宝乘车码", "com.coloros.assistantscreen/com.oplus.assistantscreen.flamingo.trafficcode.AliTrafficCodeActivity", "alipay-transit.webp", null)
++        new PresetShortcut("微信乘车码", "com.coloros.assistantscreen/com.oplus.assistantscreen.flamingo.trafficcode.WxTrafficCodeActivity", "wechat-transit.png", null,
++                WechatTransit.COMPONENT),
++        new PresetShortcut("支付宝乘车码", "com.coloros.assistantscreen/com.oplus.assistantscreen.flamingo.trafficcode.AliTrafficCodeActivity", "alipay-transit.webp",
++                "alipays://platformapi/startapp?appId=200011235&chInfo=ch_oppo_left&sceneCode=KF_CHANGSHANG&partnerId=ch_oppo_left&pikshemo=YES",
++                "com.eg.android.AlipayGphone/com.alipay.mobile.quinox.SchemeLauncherActivity")
+     };
+ 
+     final String label;
+     final ShortcutTarget target;
++    private final ShortcutTarget launchTarget;
+     private final String asset, data;
+     private Bitmap systemIcon, circleIcon;
+ 
+     private PresetShortcut(String label, String id, String asset, String data) {
++        this(label, id, asset, data, id);
++    }
++
++    private PresetShortcut(String label, String id, String asset, String data, String component) {
+         this.label = label;
+         this.target = ShortcutTarget.parse(id);
++        this.launchTarget = ShortcutTarget.parse(component);
+         this.asset = asset;
+         this.data = data;
+     }
+@@ -51,17 +60,18 @@
+ 
+     boolean available(Context context) {
+         try {
+-            ActivityInfo info = ShortcutStore.activity(context, target);
++            ActivityInfo info = ShortcutStore.activity(context, launchTarget);
+             return info.enabled && info.applicationInfo.enabled;
+         } catch (Exception error) { return false; }
+     }
+ 
+     Intent intent() {
+-        Intent intent = new Intent().setComponent(new ComponentName(target.packageName, target.activityName));
+-        // Alipay owns the subsequent payment activity chain; transit uses Assistant's dedicated bridges.
++        Intent intent = new Intent().setComponent(new ComponentName(launchTarget.packageName, launchTarget.activityName));
+         if (data != null) intent.setAction(Intent.ACTION_VIEW).setData(Uri.parse(data));
+         return intent;
+     }
++
++    boolean isWechatTransit() { return WechatTransit.COMPONENT.equals(launchTarget.id()); }
+ 
+     Drawable icon(Context context) {
+         return icon(context, ShortcutIcons.useOriginal(context));
+diff --git a/app/src/main/java/dev/mback/oneplus/WechatTransit.java b/app/src/main/java/dev/mback/oneplus/WechatTransit.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..c7333f4125de44d22ad14ba318d175726245a353
+--- /dev/null
++++ b/app/src/main/java/dev/mback/oneplus/WechatTransit.java
+@@ -0,0 +1,83 @@
++package dev.mback.oneplus;
++
++import android.app.ActivityOptions;
++import android.app.PendingIntent;
++import android.content.ComponentName;
++import android.content.Context;
++import android.content.Intent;
++import android.content.pm.ApplicationInfo;
++import android.content.pm.PackageManager;
++import android.os.Build;
++import android.os.Bundle;
++import android.os.Handler;
++import android.os.Looper;
++import android.os.Parcelable;
++import android.util.Base64;
++import android.util.Log;
++import android.widget.Toast;
++import dalvik.system.PathClassLoader;
++import java.util.concurrent.atomic.AtomicBoolean;
++import java.util.concurrent.atomic.AtomicInteger;
++
++/** WeChat classes stay in MBack's process; SystemUI authorizes the fixed destination. */
++final class WechatTransit {
++    static final String ACTION = "dev.mback.oneplus.OPEN_WECHAT_TRANSIT";
++    static final String LAUNCH_EXTRA = "wechat-launch";
++    static final String COMPONENT = "com.tencent.mm/com.tencent.mm.plugin.appbrand.launching.AppBrandLaunchProxyUI";
++    private static final AtomicBoolean opening = new AtomicBoolean();
++    private static final AtomicInteger requests = new AtomicInteger();
++
++    static void request(Context context) {
++        ActivityOptions options = ActivityOptions.makeBasic();
++        if (Build.VERSION.SDK_INT >= 35) options.setPendingIntentCreatorBackgroundActivityStartMode(
++                ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
++        Bundle bundle = options.toBundle();
++        bundle.putInt("android.activity.windowingMode", 100);
++        Intent destination = new Intent().setComponent(ComponentName.unflattenFromString(COMPONENT))
++                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++        int flags = PendingIntent.FLAG_ONE_SHOT | (Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0);
++        PendingIntent target = PendingIntent.getActivity(context, requests.incrementAndGet(), destination, flags, bundle);
++        try {
++            context.startActivity(new Intent(ACTION).setClassName("dev.mback.oneplus", "dev.mback.oneplus.WechatTransitActivity")
++                    .putExtra(LAUNCH_EXTRA, target)
++                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS));
++        } catch (RuntimeException error) { target.cancel(); throw error; }
++    }
++
++    static void open(Context context, PendingIntent target) {
++        if (!opening.compareAndSet(false, true)) { target.cancel(); return; }
++        new Thread(() -> {
++            try {
++                if (!context.getPackageManager().hasSigningCertificate("com.tencent.mm", Base64.decode(
++                        "D+T/hcIVkYOW2tx82M5pYzOa8z03dRpW5UxyBrY6PHw=", Base64.NO_WRAP), PackageManager.CERT_INPUT_SHA256)) {
++                    throw new SecurityException("WeChat signing certificate is not trusted");
++                }
++                ApplicationInfo info = context.getPackageManager().getApplicationInfo("com.tencent.mm", 0);
++                if (!info.enabled) throw new IllegalStateException("WeChat is disabled");
++                ClassLoader loader = new PathClassLoader(info.sourceDir, context.getClassLoader());
++                // shortcut: WeChat 8.0.79's private parcel fields; update this mapping if WeChat changes its protocol.
++                Class<?> type = loader.loadClass("com.tencent.mm.plugin.appbrand.launching.params.LaunchParcel");
++                Object request = type.getDeclaredConstructor().newInstance();
++                type.getField("d").set(request, "gh_3cf62f4f1d52@app");
++                type.getField("i").set(request, "pages/qrcode/index?noback=1&channel=oppo_fuone&attach=02_oppo_fuone");
++                type.getField("o").set(request, loader.loadClass("com.tencent.mm.plugin.appbrand.report.AppBrandStatObject")
++                        .getDeclaredConstructor().newInstance());
++                Intent fill = new Intent().putExtra("extra_launch_parcel", (Parcelable) request).putExtra("extra_from_mm", false);
++                ActivityOptions sender = ActivityOptions.makeBasic();
++                if (Build.VERSION.SDK_INT >= 34) sender.setPendingIntentBackgroundActivityStartMode(
++                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
++                target.send(context, 0, fill, null, null, null, sender.toBundle());
++                Log.i("MBack", "Direct WeChat transit launched");
++            } catch (Throwable error) {
++                Log.w("MBack", "Direct WeChat transit failed", error);
++                new Handler(Looper.getMainLooper()).post(() -> Toast.makeText(context,
++                        "微信乘车码打开失败，请确认微信已启用且版本兼容", Toast.LENGTH_LONG).show());
++            } finally {
++                target.cancel();
++                opening.set(false);
++            }
++        }, "mback-wechat-transit").start();
++    }
++
++    private WechatTransit() {}
++}
+diff --git a/app/src/main/java/dev/mback/oneplus/WechatTransitActivity.java b/app/src/main/java/dev/mback/oneplus/WechatTransitActivity.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..355282b85fd3296949f289a0a0daa686f0764b8d
+--- /dev/null
++++ b/app/src/main/java/dev/mback/oneplus/WechatTransitActivity.java
+@@ -0,0 +1,30 @@
++package dev.mback.oneplus;
++
++import android.app.Activity;
++import android.app.PendingIntent;
++import android.content.Intent;
++import android.os.Bundle;
++
++/** No window is drawn; an explicit user launch also works with ColorOS startup control. */
++public final class WechatTransitActivity extends Activity {
++    @Override public void onCreate(Bundle state) {
++        super.onCreate(state);
++        try {
++            if (accepts(getIntent())) WechatTransit.open(getApplicationContext(),
++                    getIntent().getParcelableExtra(WechatTransit.LAUNCH_EXTRA));
++        } finally {
++            finish();
++            overridePendingTransition(0, 0);
++        }
++    }
++
++    static boolean accepts(Intent intent) {
++        if (intent == null || !WechatTransit.ACTION.equals(intent.getAction()) || intent.getData() != null) return false;
++        try {
++            if (intent.getExtras() == null || intent.getExtras().size() != 1) return false;
++            PendingIntent target = intent.getParcelableExtra(WechatTransit.LAUNCH_EXTRA);
++            return target != null && "com.android.systemui".equals(target.getCreatorPackage())
++                    && (android.os.Build.VERSION.SDK_INT < 31 || target.isActivity());
++        } catch (RuntimeException error) { return false; }
++    }
++}
+diff --git a/build-local.sh b/build-local.sh
+index 72d7cc67f5a28aaca9b126418f9fbc44fb538bf6..0b64670204aaa7de4cbc1d744694b388da90afeb 100644
+--- a/build-local.sh
++++ b/build-local.sh
+@@ -7,7 +7,7 @@
+ # Remove old build outputs, including legacy root-service bytecode.
+ rm -rf "$OUT/classes" "$OUT/dex" "$OUT/xposed-stubs"
+ mkdir -p "$OUT/classes" "$OUT/dex" "$OUT/xposed-stubs"
+-"$BT/aapt2" link -o "$OUT/unsigned.apk" --manifest app/src/main/AndroidManifest.xml -A app/src/main/assets -I "$PLATFORM" --min-sdk-version 29 --target-sdk-version 35 --version-code 25 --version-name 0.7.0 --auto-add-overlay
++"$BT/aapt2" link -o "$OUT/unsigned.apk" --manifest app/src/main/AndroidManifest.xml -A app/src/main/assets -I "$PLATFORM" --min-sdk-version 29 --target-sdk-version 35 --version-code 26 --version-name 0.7.1 --auto-add-overlay
+ find stubs -name '*.java' -print0 | xargs -0 javac -source 8 -target 8 -classpath "$PLATFORM" -d "$OUT/xposed-stubs"
+ find app/src/main/java -name '*.java' -print0 | xargs -0 javac -source 8 -target 8 -classpath "$PLATFORM:$OUT/xposed-stubs" -d "$OUT/classes"
+ "$BT/d8" --min-api 29 --lib "$PLATFORM" --output "$OUT/dex" $(find "$OUT/classes" -name '*.class')
+diff --git a/tests/activity_shortcuts_test.py b/tests/activity_shortcuts_test.py
+index c7b2ca9352212c0cdb4d3dadd8cdfa5dab92415d..4999d007e2711bfaf46da679b5315d403b0ef75c 100644
+--- a/tests/activity_shortcuts_test.py
++++ b/tests/activity_shortcuts_test.py
+@@ -168,7 +168,9 @@
+         tree = pick_app(PACKAGE)
+         targets = [PACKAGE] + [PACKAGE + "/" + PACKAGE + "." + name
+                                for name in ("MainActivity", "TestActivity", "MoreAppsActivity")]
+-        assert nodes(tree, "共 3 个活动 · 已添加 0/6"), "Not all manifest activities were listed"
++        assert nodes(tree, "共 4 个活动 · 已添加 0/6"), "Not all manifest activities were listed"
++        assert nodes(tree, "添加快捷项：" + PACKAGE + "/" + PACKAGE + ".WechatTransitActivity", "content-desc"), (
++            "Protected transit helper is missing from the complete activity list")
+         # Activities inherit the application icon, including non-exported TestActivity.
+         before = image()
+         assert before.getpixel(activity_icon(tree, PACKAGE)) == before.getpixel(activity_icon(tree, TEST))
+diff --git a/tests/android/TransitShortcutsInstrumentation.java b/tests/android/TransitShortcutsInstrumentation.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..9bc37cddfba14de1ee12eac85502a6c568a25d9f
+--- /dev/null
++++ b/tests/android/TransitShortcutsInstrumentation.java
+@@ -0,0 +1,56 @@
++package dev.mback.oneplus;
++
++import android.app.Activity;
++import android.app.Instrumentation;
++import android.app.PendingIntent;
++import android.content.Context;
++import android.content.ComponentName;
++import android.content.Intent;
++import android.content.pm.PackageManager;
++import android.os.Bundle;
++
++public final class TransitShortcutsInstrumentation extends Instrumentation {
++    @Override public void onCreate(Bundle args) { super.onCreate(args); start(); }
++
++    @Override public void onStart() {
++        Bundle result = new Bundle();
++        try {
++            Context context = getTargetContext();
++            PresetShortcut wechat = PresetShortcut.ALL[4], alipay = PresetShortcut.ALL[5];
++            check(wechat.available(context) && alipay.available(context), "Transit depends on disabled Assistant");
++            check(wechat.isWechatTransit() && !alipay.isWechatTransit(), "Wrong transit dispatch");
++            check(!wechat.intent().getComponent().getPackageName().equals("com.coloros.assistantscreen"), "WeChat bridge retained");
++            check(alipay.intent().getComponent().getPackageName().equals("com.eg.android.AlipayGphone"), "Alipay bridge retained");
++            check(alipay.intent().getData().getQueryParameter("appId").equals("200011235"), "Wrong transit appId");
++            check(PresetShortcut.ALL[3].intent().getData().getQueryParameter("appId").equals("20000056"), "Payment route changed");
++            for (PresetShortcut preset : new PresetShortcut[]{wechat, alipay}) {
++                ShortcutTarget saved = ShortcutTarget.parse(preset.target.id());
++                check(PresetShortcut.find(saved) == preset, "Legacy shortcut lost its preset");
++                check(ShortcutStore.label(context, new ShortcutStore.Item(saved, "")).equals(preset.label), "Legacy label changed");
++            }
++            check(context.getPackageManager().getActivityInfo(new ComponentName(context, WechatTransitActivity.class), 0)
++                    .permission.equals("android.permission.STATUS_BAR"), "Transit action is not permission protected");
++            check(context.getPackageManager().checkPermission("android.permission.STATUS_BAR", "dev.mback.oneplus.transitchecks")
++                    == PackageManager.PERMISSION_DENIED, "Ordinary apps can invoke the transit action");
++            check(context.getPackageManager().checkPermission("android.permission.STATUS_BAR", "com.android.systemui")
++                    == PackageManager.PERMISSION_GRANTED, "SystemUI cannot invoke transit");
++            check(!WechatTransitActivity.accepts(new Intent(WechatTransit.ACTION)), "Missing SystemUI authorization accepted");
++            check(!WechatTransitActivity.accepts(null) && !WechatTransitActivity.accepts(new Intent()), "Unknown action accepted");
++            check(!WechatTransitActivity.accepts(new Intent(WechatTransit.ACTION).putExtra("arbitrary", true)), "External arguments accepted");
++            check(!WechatTransitActivity.accepts(new Intent(WechatTransit.ACTION).setData(android.net.Uri.parse("test://data"))), "External URI accepted");
++            PendingIntent own = PendingIntent.getActivity(context, 1107, new Intent(context, MainActivity.class),
++                    PendingIntent.FLAG_ONE_SHOT | PendingIntent.FLAG_IMMUTABLE);
++            try {
++                check(!WechatTransitActivity.accepts(new Intent(WechatTransit.ACTION).putExtra(WechatTransit.LAUNCH_EXTRA, own)),
++                        "A token from another package was accepted");
++            } finally { own.cancel(); }
++            result.putString("result", "Transit preset checks passed");
++            finish(Activity.RESULT_OK, result);
++        } catch (Throwable error) {
++            result.putString("error", error.toString());
++            finish(Activity.RESULT_CANCELED, result);
++        }
++    }
++
++    private void check(boolean value, String message) { if (!value) throw new AssertionError(message); }
++}
+diff --git a/tests/transit_shortcuts_test.py b/tests/transit_shortcuts_test.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..cc100f71fa9473bdf3dc01b72daedf8fcc7ecae9
+--- /dev/null
++++ b/tests/transit_shortcuts_test.py
+@@ -0,0 +1,145 @@
++"""Disable Assistant and check legacy transit presets through the real corner menu.
++
++Requires the installed, reloaded module and an unlocked phone. Restores settings
++and Assistant's enabled state; never takes screenshots of payment/transit pages.
++"""
++
++import json
++import os
++import re
++import shlex
++import subprocess
++import tempfile
++import time
++from pathlib import Path
++
++from activity_shortcuts_test import arc_point
++from corner_touch_test import wait_menu
++from main_ui_test import adb, preferences, snapshot
++from preset_shortcuts_test import KEY, PACKAGE, PRESETS, write_shortcuts
++
++
++ASSISTANT = "com.coloros.assistantscreen"
++CHECKS = PACKAGE + ".transitchecks"
++# Keep the tested icons away from the near-vertical end of the arc so a single
++# injected straight swipe satisfies the corner's inward-diagonal recognition.
++ORDER = (4, 5, 0, 1, 2, 3)
++
++
++def run(*args):
++    return subprocess.check_output(["rtk", "proxy", *map(str, args)], text=True,
++                                   stderr=subprocess.STDOUT, timeout=180)
++
++
++def root(command):
++    return adb("shell", "su", "-c", shlex.quote(command))
++
++
++def preset_checks():
++    sdk = Path(os.environ.get("ANDROID_HOME", str(Path.home() / "Library/Android/sdk")))
++    tools, android = sdk / "build-tools/36.0.0", sdk / "platforms/android-35/android.jar"
++    with tempfile.TemporaryDirectory() as directory:
++        folder = Path(directory)
++        manifest = folder / "AndroidManifest.xml"
++        manifest.write_text('<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="' + CHECKS + '">'
++                            '<application android:label="MBack transit checks"/>'
++                            '<instrumentation android:name="dev.mback.oneplus.TransitShortcutsInstrumentation" '
++                            'android:targetPackage="dev.mback.oneplus"/></manifest>')
++        classes, dex, apk = folder / "classes", folder / "dex", folder / "checks.apk"
++        classes.mkdir()
++        dex.mkdir()
++        run("javac", "-source", "8", "-target", "8", "-cp", str(android) + ":app/build/local/classes",
++            "-d", classes, "tests/android/TransitShortcutsInstrumentation.java")
++        run(tools / "d8", "--min-api", "29", "--lib", android, "--output", dex, *classes.rglob("*.class"))
++        run(tools / "aapt2", "link", "-o", apk, "--manifest", manifest, "-I", android,
++            "--min-sdk-version", "29", "--target-sdk-version", "35")
++        run("zip", "-q", "-j", apk, dex / "classes.dex")
++        run(tools / "apksigner", "sign", "--ks", Path.home() / ".android/debug.keystore",
++            "--ks-key-alias", "androiddebugkey", "--ks-pass", "pass:android", "--key-pass", "pass:android", apk)
++        run("adb", "push", apk, "/data/local/tmp/mback-transit-checks.apk")
++        root("pm install -r /data/local/tmp/mback-transit-checks.apk")
++        result = adb("shell", "am", "instrument", "-w", "-r", CHECKS + "/dev.mback.oneplus.TransitShortcutsInstrumentation")
++        assert "Transit preset checks passed" in result and "INSTRUMENTATION_CODE: -1" in result, result
++        print("Legacy IDs, enabled state, distinct payment/transit routes and argument rejection passed", flush=True)
++    print("Direct launch requires the system permission and SystemUI token; arbitrary parameters are rejected", flush=True)
++
++
++def launch(index, original, cold):
++    name = PRESETS[index][0]
++    package = "com.tencent.mm" if index == 4 else "com.eg.android.AlipayGphone"
++    expected = (package + "/.plugin.appbrand.ui.AppBrandUI" if index == 4 else
++                package + "/com.alipay.android.phone.xriver.bundlex.CSGAPushActivity")
++    if cold:
++        adb("shell", "am", "force-stop", package)
++    adb("shell", "input", "keyevent", "KEYCODE_HOME")
++    adb("shell", "am", "start", "-W", "--windowingMode", "1", "-a", "android.settings.SETTINGS")
++    deadline = time.monotonic() + 5
++    while time.monotonic() < deadline:
++        windows = adb("shell", "dumpsys", "window", "displays")
++        if re.search(r"mCurrentFocus=Window\{[^\n]*com.android.settings/", windows):
++            break
++        time.sleep(.1)
++    else:
++        raise AssertionError("Settings did not receive focus after the native window transition")
++    width, height = map(int, re.findall(r"(\d+)x(\d+)", adb("shell", "wm", "size"))[-1])
++    density = int(re.findall(r"\d+", adb("shell", "wm", "density"))[-1]) / 160
++    x, y = arc_point(ORDER.index(index) + 1, original, width, height, density, len(PRESETS) + 1)
++    start_x, start_y = round(16 * density), height - round(32 * density)
++    time.sleep(1)
++    gesture = subprocess.Popen(["rtk", "proxy", "adb", "shell", "input", "swipe", str(start_x), str(start_y),
++                                str(x), str(y), "1600"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
++    try:
++        wait_menu(True)
++    finally:
++        _, error = gesture.communicate(timeout=10)
++    assert gesture.returncode == 0, error
++    wait_menu(False)
++    deadline = time.monotonic() + 20
++    while time.monotonic() < deadline:
++        activities = adb("shell", "dumpsys", "activity", "activities")
++        top = "\n".join(line for line in activities.splitlines() if "topResumedActivity=" in line)
++        if expected in top:
++            tree = snapshot()
++            keyword = "乘车码" if index == 4 else "出行"
++            if any(keyword in n.get("text", "") + n.get("content-desc", "") for n in tree.iter("node")):
++                print(name + (" cold" if cold else " warm") + ": transit page reached without Assistant", flush=True)
++                return
++        time.sleep(.2)
++    raise AssertionError(name + " did not reach its transit page")
++
++
++def main():
++    policy = adb("shell", "dumpsys", "window", "policy")
++    assert re.search(r"^\s+showing=false$", policy, re.M), "Unlock the phone before testing"
++    original = preferences()
++    state = re.search(r"User 0: [^\n]* enabled=(\d+)", adb("shell", "dumpsys", "package", ASSISTANT))[1]
++    assert original.get("mback_corner_menu_enabled", "1") == "1", "Enable corner shortcuts first"
++    stamp = adb("shell", "date", "+%m-%d_%H:%M:%S.000").strip().replace("_", " ")
++    try:
++        root("pm disable-user --user 0 " + ASSISTANT)
++        preset_checks()
++        write_shortcuts(json.dumps([{"id": PRESETS[index][1]} for index in ORDER]))
++        for cold in (True, False):
++            for index in (4, 5):
++                launch(index, original, cold)
++        events = adb("shell", "logcat", "-b", "events", "-d", "-v", "time", "-T", shlex.quote(stamp))
++        assert not any(ASSISTANT in line and ("wm_create_activity" in line or "wm_new_intent" in line)
++                       for line in events.splitlines()), "Assistant participated in a launch"
++    finally:
++        adb("shell", "input", "motionevent", "CANCEL", "0", "0")
++        adb("shell", "input", "keyevent", "KEYCODE_HOME")
++        adb("shell", "am", "force-stop", PACKAGE)
++        if KEY in original:
++            write_shortcuts(original[KEY])
++        else:
++            root("settings delete global " + KEY)
++        command = {"0": "default-state", "1": "enable", "2": "disable", "3": "disable-user", "4": "disable-until-used"}[state]
++        root("pm " + command + " --user 0 " + ASSISTANT)
++        root("pm uninstall " + CHECKS)
++        adb("shell", "rm", "-f", "/data/local/tmp/mback-transit-checks.apk", "/data/local/tmp/mback-main-test.xml")
++        assert preferences() == original, "Original settings were not restored"
++    print("Assistant was never launched; original settings and enabled state restored", flush=True)
++
++
++if __name__ == "__main__":
++    main()

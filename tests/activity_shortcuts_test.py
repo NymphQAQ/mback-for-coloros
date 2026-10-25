@@ -167,8 +167,8 @@ def main():
             wait_saved(saved)
         tree = pick_app(PACKAGE)
         targets = [PACKAGE] + [PACKAGE + "/" + PACKAGE + "." + name
-                               for name in ("MainActivity", "TestActivity", "MoreAppsActivity")]
-        assert nodes(tree, "共 3 个活动 · 已添加 0/6"), "Not all manifest activities were listed"
+                               for name in ("MainActivity", "TestActivity", "MoreAppsActivity", "WechatTransitActivity")]
+        assert nodes(tree, "共 4 个活动 · 已添加 0/6"), "Not all manifest activities were listed"
         # Activities inherit the application icon, including non-exported TestActivity.
         before = image()
         assert before.getpixel(activity_icon(tree, PACKAGE)) == before.getpixel(activity_icon(tree, TEST))
