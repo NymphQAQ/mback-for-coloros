@@ -53,6 +53,8 @@ final class ShortcutStore {
 
     static String snapshot(Context context) { return snapshot(context, 0); }
 
+    static boolean hasPending(int ring) { key(ring); return pending.containsKey(ring); }
+
     static String snapshot(Context context, int ring) {
         String queued = pending.get(ring);
         if (queued != null) return "v2:" + queued;
@@ -109,7 +111,6 @@ final class ShortcutStore {
     }
 
     static boolean hasPending() { return hasPending(0); }
-    static boolean hasPending(int ring) { return pending.containsKey(ring); }
 
     static void save(List<Item> items, Consumer<Boolean> result) throws Exception { save(items, 0, result); }
 

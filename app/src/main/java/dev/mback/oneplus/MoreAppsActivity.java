@@ -11,7 +11,6 @@ import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.database.ContentObserver;
 import android.graphics.Color;
-import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
@@ -48,6 +47,7 @@ import java.util.TreeMap;
 /** Native small-window content with drag ordering and automatic shortcut saving. */
 public final class MoreAppsActivity extends Activity {
     private static final int PICK_ICON = 73;
+    private static final int PICK_LIBRARY_ICON = 74;
     static final String RING_EXTRA = "mback_edit_ring";
     private int editingRing;
     private final ArrayList<Entry> installed = new ArrayList<>();
@@ -66,6 +66,15 @@ public final class MoreAppsActivity extends Activity {
                 render();
                 if (activityAdapter != null) activityAdapter.notifyDataSetChanged();
             }
+        }
+    };
+    private final ContentObserver shortcutsObserver = new ContentObserver(new Handler(Looper.getMainLooper())) {
+        @Override public void onChange(boolean selfChange) {
+            if (ShortcutStore.hasPending(editingRing)) return;
+            selected.clear();
+            for (ShortcutStore.Item item : ShortcutStore.read(MoreAppsActivity.this, editingRing)) selected.put(item.target.id(), item);
+            if (!installed.isEmpty()) render();
+            if (activityAdapter != null) activityAdapter.notifyDataSetChanged();
         }
     };
 
@@ -89,66 +98,55 @@ public final class MoreAppsActivity extends Activity {
         editingRing = state == null ? getIntent().getIntExtra(RING_EXTRA, 0) : state.getInt(RING_EXTRA, 0);
         if (editingRing < 0 || editingRing > 2) editingRing = 0;
         setTitle(ringTitle());
-        getWindow().setStatusBarColor(Color.TRANSPARENT);
-        getWindow().setNavigationBarColor(Color.TRANSPARENT);
-        getWindow().setNavigationBarContrastEnforced(false);
-        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
         for (ShortcutStore.Item item : state == null || !state.containsKey("draft") ? ShortcutStore.read(this, editingRing)
                 : ShortcutStore.decode("v2:" + state.getString("draft", "[]"), ShortcutStore.limit(editingRing))) selected.put(item.target.id(), item);
         pendingIcon = state == null ? null : state.getString("pending_icon");
         String restorePicker = state == null ? null : state.getString("picker_package");
-        LinearLayout panel = column();
-        panel.setForceDarkAllowed(false);
-        panel.setPadding(dp(15), dp(14), dp(15), dp(15));
-        panel.setBackgroundColor(Color.WHITE);
-        panel.setOnApplyWindowInsetsListener((view, insets) -> {
-            panel.setPadding(dp(15) + insets.getSystemWindowInsetLeft(), dp(14) + insets.getSystemWindowInsetTop(),
-                    dp(15) + insets.getSystemWindowInsetRight(), dp(15) + insets.getSystemWindowInsetBottom());
-            return insets.consumeSystemWindowInsets();
-        });
-        LinearLayout top = new LinearLayout(this);
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = text(ringTitle(), 18, MainActivity.INK);
-        title.setTypeface(Typeface.create("OPPOSans", Typeface.BOLD));
-        top.addView(title, new LinearLayout.LayoutParams(0, dp(42), 1));
+        LinearLayout panel = AppUi.screen(this);
+        LinearLayout actions = new LinearLayout(this);
+        actions.setGravity(Gravity.CENTER_VERTICAL);
         saveStatus = text("更改自动保存", 11, MainActivity.MUTED);
-        saveStatus.setGravity(Gravity.CENTER_VERTICAL | Gravity.RIGHT);
-        top.addView(saveStatus, new LinearLayout.LayoutParams(-2, dp(48)));
-        Button home = new Button(this);
-        home.setText("主页");
+        saveStatus.setGravity(Gravity.CENTER);
+        saveStatus.setPadding(dp(10), dp(6), dp(10), dp(6));
+        saveStatus.setBackground(AppUi.shape(this, AppUi.PALE, 18));
+        actions.addView(saveStatus, new LinearLayout.LayoutParams(-2, -2));
+        Button home = AppUi.button(this, "主页", false);
         home.setTextSize(12);
-        home.setAllCaps(false);
-        home.setTextColor(MainActivity.GREEN);
         home.setContentDescription("进入 MBack 主页");
-        home.setPadding(0, 0, 0, 0);
-        home.setBackground(new android.graphics.drawable.RippleDrawable(
-                android.content.res.ColorStateList.valueOf(0x2228684E), shape(MainActivity.PALE, 14), null));
-        home.setStateListAnimator(null);
+        home.setPadding(dp(10), 0, dp(10), 0);
         home.setOnClickListener(v -> openHome());
         LinearLayout.LayoutParams homeParams = new LinearLayout.LayoutParams(dp(60), dp(48));
         homeParams.leftMargin = dp(8);
-        top.addView(home, homeParams);
-        panel.addView(top);
+        actions.addView(home, homeParams);
+        panel.addView(AppUi.header(this, ringTitle(), null, actions));
+        LinearLayout body = AppUi.content(this);
+        body.setPadding(dp(20), dp(4), dp(20), dp(12));
+        panel.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
         search = search("搜索名称或包名（含无桌面入口）");
-        panel.addView(search, spaced(-1, 42));
+        body.addView(search, spaced(-1, 48));
         watch(search, () -> { search.removeCallbacks(renderSearch); search.postDelayed(renderSearch, 160); });
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
+        scroll.setVerticalScrollBarEnabled(false);
         list = column();
         list.setPadding(dp(1), dp(3), dp(1), dp(8));
         scroll.addView(list);
-        panel.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        body.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         TextView hint = text("长按已添加图标排序 · 更改自动保存", 11, MainActivity.MUTED);
         hint.setGravity(Gravity.CENTER);
         hint.setPadding(0, dp(8), 0, 0);
-        panel.addView(hint);
+        body.addView(hint);
         setContentView(panel);
         getContentResolver().registerContentObserver(Settings.Global.getUriFor(ArcConfig.ORIGINAL_ICON_KEY),
                 false, iconShapeObserver);
         getContentResolver().registerContentObserver(Settings.Global.getUriFor(PresetShortcut.TRANSIT_MODE_KEY),
                 false, iconShapeObserver);
+        getContentResolver().registerContentObserver(Settings.Global.getUriFor(IconPackStore.MAP_KEY),
+                false, iconShapeObserver);
+        getContentResolver().registerContentObserver(Settings.Global.getUriFor(IconPackStore.REVISION_KEY),
+                false, iconShapeObserver);
+        getContentResolver().registerContentObserver(Settings.Global.getUriFor(ShortcutStore.key(editingRing)),
+                false, shortcutsObserver);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
                 | WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
         if (ShortcutStore.hasPending(editingRing)) saveChanges();
@@ -219,6 +217,7 @@ public final class MoreAppsActivity extends Activity {
 
     @Override protected void onDestroy() {
         getContentResolver().unregisterContentObserver(iconShapeObserver);
+        getContentResolver().unregisterContentObserver(shortcutsObserver);
         search.removeCallbacks(renderSearch);
         super.onDestroy();
     }
@@ -279,7 +278,7 @@ public final class MoreAppsActivity extends Activity {
 
     private GridLayout grid() {
         GridLayout grid = new GridLayout(this);
-        grid.setColumnCount(4);
+        grid.setColumnCount(Math.max(2, Math.min(4, (getResources().getConfiguration().screenWidthDp - 76) / 68)));
         grid.setAlignmentMode(GridLayout.ALIGN_BOUNDS);
         grid.setClipChildren(false);
         grid.setClipToPadding(false);
@@ -287,23 +286,26 @@ public final class MoreAppsActivity extends Activity {
     }
 
     private void addGrid(GridLayout grid) {
-        while (grid.getChildCount() % 4 != 0) {
+        while (grid.getChildCount() % grid.getColumnCount() != 0) {
             GridLayout.LayoutParams space = new GridLayout.LayoutParams();
             space.width = 0;
             space.height = 0;
             space.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f);
             grid.addView(new View(this), space);
         }
-        list.addView(grid);
+        LinearLayout card = AppUi.card(list);
+        card.setClipChildren(false);
+        card.setClipToPadding(false);
+        card.addView(grid, new LinearLayout.LayoutParams(-1, -2));
     }
 
     private Drawable appIcon(String pkg) {
         for (Entry app : installed) if (app.pkg.equals(pkg)) {
             if (app.icon == null) break;
             Drawable.ConstantState state = app.icon.getConstantState();
-            return ShortcutIcons.display(this, state == null ? app.icon : state.newDrawable(getResources()));
+            return ShortcutIcons.application(this, pkg, state == null ? app.icon : state.newDrawable(getResources()));
         }
-        try { return ShortcutIcons.display(this, getPackageManager().getApplicationIcon(pkg)); }
+        try { return ShortcutIcons.application(this, pkg, getPackageManager().getApplicationIcon(pkg)); }
         catch (Exception error) { return ShortcutIcons.display(this, getDrawable(android.R.drawable.sym_def_app_icon)); }
     }
 
@@ -317,6 +319,7 @@ public final class MoreAppsActivity extends Activity {
         LinearLayout item = column();
         item.setGravity(Gravity.CENTER);
         item.setPadding(dp(2), dp(2), dp(2), dp(2));
+        item.setBackground(AppUi.ripple(this, Color.WHITE, 16));
         item.setContentDescription(preset != null ? "预置功能：" + preset.label
                 : added == null ? "选择应用：" + pkg : "快捷项：" + added.target.id());
         if (added != null && preset == null) {
@@ -334,11 +337,11 @@ public final class MoreAppsActivity extends Activity {
         TextView badge = text(added == null ? "+" : "−", 13, Color.WHITE);
         badge.setIncludeFontPadding(false);
         badge.setGravity(Gravity.CENTER);
-        badge.setBackground(shape(added == null ? 0xFF32B95C : 0xFFE94C55, 30));
+        badge.setBackground(shape(added == null ? AppUi.GREEN : AppUi.ERROR, 30));
         FrameLayout.LayoutParams badgeParams = new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.TOP | Gravity.RIGHT);
         holder.addView(badge, badgeParams);
         item.addView(holder, new LinearLayout.LayoutParams(dp(63), dp(63)));
-        TextView name = text(label + (available ? "" : "\n（不可用）"), 10, MainActivity.INK);
+        TextView name = text(label + (available ? "" : "\n（不可用）"), 11, MainActivity.INK);
         name.setGravity(Gravity.CENTER);
         name.setMaxLines(2);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -359,6 +362,7 @@ public final class MoreAppsActivity extends Activity {
         if (added != null && added.target.activityName != null && preset == null) {
             TextView edit = text("修改图标", 10, MainActivity.GREEN);
             edit.setGravity(Gravity.CENTER);
+            edit.setBackground(AppUi.ripple(this, AppUi.PALE, 10));
             edit.setContentDescription("修改图标：" + added.target.id());
             edit.setOnClickListener(v -> { if (!busy) editIcon(added); });
             item.addView(edit, new LinearLayout.LayoutParams(-1, dp(24)));
@@ -498,27 +502,33 @@ public final class MoreAppsActivity extends Activity {
         if (busy) return;
         pickerPackage = pkg;
         Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         LinearLayout panel = column();
-        panel.setPadding(dp(18), dp(16), dp(18), dp(10));
-        panel.setBackground(shape(Color.WHITE, 20));
+        panel.setPadding(dp(18), dp(12), dp(18), dp(16));
+        panel.setForceDarkAllowed(false);
+        panel.setBackground(shape(AppUi.BACKGROUND, 24));
         String appName = pkg;
         for (Entry app : installed) if (app.pkg.equals(pkg)) appName = app.label;
-        panel.addView(text(appName, 19, MainActivity.INK));
+        LinearLayout heading = AppUi.header(this, appName, dialog::dismiss, null);
+        heading.setPadding(0, 0, 0, dp(4));
+        panel.addView(heading);
         TextView subtitle = text("启动应用或添加活动 · 已添加 " + selected.size() + "/" + ShortcutStore.limit(editingRing), 12, MainActivity.MUTED);
         subtitle.setPadding(0, dp(8), 0, dp(8));
         panel.addView(subtitle);
         EditText filter = search("搜索活动名称或类名");
         filter.setContentDescription("搜索活动");
-        panel.addView(filter, spaced(-1, 44));
+        panel.addView(filter, spaced(-1, 48));
         ListView rows = new ListView(this);
+        rows.setDivider(new android.graphics.drawable.ColorDrawable(AppUi.BORDER));
         rows.setDividerHeight(dp(1));
+        rows.setSelector(AppUi.ripple(this, Color.WHITE, 12));
         ActivityAdapter adapter = new ActivityAdapter(pkg, subtitle);
         rows.setAdapter(adapter);
-        panel.addView(rows, new LinearLayout.LayoutParams(-1, 0, 1));
-        TextView close = text("返回", 14, MainActivity.GREEN);
-        close.setGravity(Gravity.CENTER);
-        close.setOnClickListener(v -> dialog.dismiss());
-        panel.addView(close, new LinearLayout.LayoutParams(-1, dp(48)));
+        LinearLayout choices = column();
+        choices.setPadding(dp(12), dp(4), dp(12), dp(4));
+        choices.setBackground(AppUi.cardBackground(this));
+        choices.addView(rows, new LinearLayout.LayoutParams(-1, -1));
+        panel.addView(choices, new LinearLayout.LayoutParams(-1, 0, 1));
         watch(filter, () -> adapter.filter(filter.getText().toString()));
         dialog.setContentView(panel);
         dialog.setOnDismissListener(ignored -> { if (activityAdapter == adapter) { activityAdapter = null; pickerPackage = null; } });
@@ -572,19 +582,22 @@ public final class MoreAppsActivity extends Activity {
                 row = new LinearLayout(MoreAppsActivity.this);
                 row.setGravity(Gravity.CENTER_VERTICAL);
                 row.setPadding(0, dp(8), 0, dp(8));
+                row.setMinimumHeight(dp(72));
                 ImageView image = new ImageView(MoreAppsActivity.this);
                 image.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
                 row.addView(image, new LinearLayout.LayoutParams(dp(40), dp(40)));
                 LinearLayout labels = column();
                 labels.setPadding(dp(10), 0, dp(4), 0);
-                labels.addView(text("", 14, MainActivity.INK));
-                TextView detail = text("", 10, MainActivity.MUTED);
+                labels.addView(AppUi.text(MoreAppsActivity.this, "", 14, AppUi.INK, true));
+                TextView detail = text("", 11, MainActivity.MUTED);
+                detail.setPadding(0, dp(4), 0, 0);
                 detail.setMaxLines(3);
                 detail.setEllipsize(android.text.TextUtils.TruncateAt.END);
                 labels.addView(detail);
                 row.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
                 TextView edit = text("图标", 12, MainActivity.GREEN);
                 edit.setGravity(Gravity.CENTER);
+                edit.setBackground(AppUi.ripple(MoreAppsActivity.this, AppUi.PALE, 12));
                 row.addView(edit, new LinearLayout.LayoutParams(dp(44), dp(48)));
                 TextView pick = text("", 22, MainActivity.GREEN);
                 pick.setGravity(Gravity.CENTER);
@@ -602,6 +615,9 @@ public final class MoreAppsActivity extends Activity {
             edit.setContentDescription("修改图标：" + entry.target.id());
             edit.setOnClickListener(v -> { if (!busy && picked != null) editIcon(picked); });
             pick.setText(picked == null ? "+" : "−");
+            pick.setTextColor(picked == null ? AppUi.GREEN : AppUi.ERROR);
+            pick.setBackground(AppUi.ripple(MoreAppsActivity.this,
+                    picked == null ? AppUi.PALE : AppUi.ERROR_PALE, 12));
             pick.setContentDescription((picked == null ? "添加快捷项：" : "移除快捷项：") + entry.target.id());
             View.OnClickListener toggle = v -> {
                 toggleShortcut(entry.target, entry.enabled);
@@ -642,10 +658,15 @@ public final class MoreAppsActivity extends Activity {
     }
 
     private void editIcon(ShortcutStore.Item item) {
-        new AlertDialog.Builder(this).setTitle("活动图标")
-                .setItems(new String[]{"选择图片", PresetShortcut.find(item.target) == null ? "恢复应用图标" : "恢复预置图标"}, (dialog, choice) -> {
-                    if (choice == 1) { item.icon = ""; refresh(); return; }
+        AppUi.show(new AlertDialog.Builder(this).setTitle("活动图标")
+                .setItems(new String[]{"选择图片", "从图标库选择", PresetShortcut.find(item.target) == null ? "恢复应用图标" : "恢复预置图标"}, (dialog, choice) -> {
+                    if (choice == 2) { item.icon = ""; refresh(); return; }
                     pendingIcon = item.target.id();
+                    if (choice == 1) {
+                        startActivityForResult(new Intent(this, IconLibraryActivity.class)
+                                .putExtra(IconLibraryActivity.EXTRA_PICK, true), PICK_LIBRARY_ICON);
+                        return;
+                    }
                     Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("image/*")
                             .addCategory(Intent.CATEGORY_OPENABLE).putExtra(Intent.EXTRA_LOCAL_ONLY, true);
                     try { startActivityForResult(pick, PICK_ICON); }
@@ -653,15 +674,21 @@ public final class MoreAppsActivity extends Activity {
                         pendingIcon = null;
                         Toast.makeText(this, "没有可用的图片选择器", Toast.LENGTH_LONG).show();
                     }
-                }).setNegativeButton("取消", null).show();
+                }).setNegativeButton("取消", null));
     }
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
-        if (request != PICK_ICON) return;
+        if (request != PICK_ICON && request != PICK_LIBRARY_ICON) return;
         ShortcutStore.Item item = selected.get(pendingIcon);
         pendingIcon = null;
-        if (result != RESULT_OK || data == null || data.getData() == null || item == null) return;
+        if (result != RESULT_OK || data == null || item == null) return;
+        if (request == PICK_LIBRARY_ICON) {
+            String key = data.getStringExtra(IconLibraryActivity.EXTRA_ICON_KEY);
+            if (ShortcutIcons.validKey(key) && ShortcutIcons.file(this, key).isFile()) { item.icon = key; refresh(); }
+            return;
+        }
+        if (data.getData() == null) return;
         busy = true;
         new Thread(() -> {
             String key = null;
@@ -681,6 +708,7 @@ public final class MoreAppsActivity extends Activity {
         int revision = ++saveRevision;
         saveStatus.setText("保存中…");
         saveStatus.setTextColor(MainActivity.MUTED);
+        saveStatus.setBackground(AppUi.shape(this, AppUi.PALE, 18));
         saveStatus.setOnClickListener(null);
         try {
             ShortcutStore.save(new ArrayList<>(selected.values()), editingRing, success -> runOnUiThread(() -> {
@@ -694,7 +722,8 @@ public final class MoreAppsActivity extends Activity {
 
     private void showSaveResult(boolean success) {
         saveStatus.setText(success ? "已自动保存" : "保存失败 · 重试");
-        saveStatus.setTextColor(success ? MainActivity.GREEN : 0xFFC34F51);
+        saveStatus.setTextColor(success ? AppUi.GREEN : AppUi.ERROR);
+        saveStatus.setBackground(AppUi.shape(this, success ? AppUi.PALE : AppUi.ERROR_PALE, 18));
         saveStatus.setOnClickListener(success ? null : v -> saveChanges());
         if (!success) Toast.makeText(this, "保存失败，请检查 Root 授权后点击重试", Toast.LENGTH_LONG).show();
     }
@@ -714,13 +743,7 @@ public final class MoreAppsActivity extends Activity {
     }
 
     private EditText search(String hint) {
-        EditText input = new EditText(this);
-        input.setSingleLine(true);
-        input.setTextSize(14);
-        input.setHint(hint);
-        input.setPadding(dp(12), dp(6), dp(12), dp(6));
-        input.setBackground(shape(MainActivity.BACKGROUND, 13));
-        return input;
+        return AppUi.search(this, hint);
     }
 
     private void watch(EditText input, Runnable changed) {
@@ -730,10 +753,10 @@ public final class MoreAppsActivity extends Activity {
             @Override public void afterTextChanged(Editable text) {}
         });
     }
-    private LinearLayout column() { LinearLayout view = new LinearLayout(this); view.setOrientation(LinearLayout.VERTICAL); return view; }
-    private TextView section(String label) { TextView text = text(label, 12, MainActivity.MUTED); text.setPadding(0, dp(14), 0, dp(6)); return text; }
-    private GradientDrawable shape(int color, int radius) { GradientDrawable shape = new GradientDrawable(); shape.setColor(color); shape.setCornerRadius(dp(radius)); return shape; }
+    private LinearLayout column() { return AppUi.column(this); }
+    private TextView section(String label) { TextView text = AppUi.text(this, label, 13, AppUi.MUTED, true); text.setPadding(dp(3), dp(18), 0, dp(9)); text.setAccessibilityHeading(true); return text; }
+    private GradientDrawable shape(int color, int radius) { return AppUi.shape(this, color, radius); }
     private LinearLayout.LayoutParams spaced(int width, int height) { LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(width, dp(height)); lp.setMargins(0, dp(5), 0, dp(9)); return lp; }
-    private TextView text(String label, int size, int color) { TextView view = new TextView(this); view.setText(label); view.setTextSize(size); view.setTextColor(color); view.setTypeface(Typeface.create("OPPOSans", Typeface.NORMAL)); return view; }
+    private TextView text(String label, int size, int color) { return AppUi.text(this, label, size, color, false); }
     private int dp(float value) { return Math.round(getResources().getDisplayMetrics().density * value); }
 }

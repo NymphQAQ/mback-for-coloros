@@ -52,6 +52,7 @@ final class CornerAppMenu {
     private RowView view;
     private ExtraApps cachedExtra = new ExtraApps(Collections.emptyList(), Collections.emptyList());
     private boolean refreshingExtra;
+    private volatile int iconGeneration;
     private final android.util.LruCache<String, AppItem> extraIcons = new android.util.LruCache<>(40);
     private Bitmap placeholderCircle, placeholderOriginal;
 
@@ -84,11 +85,12 @@ final class CornerAppMenu {
         String csv = ShortcutStore.snapshot(context);
         if (csv.equals(cachedCsv) || csv.equals(loadingCsv)) return;
         final String requested = csv;
+        final int generation = iconGeneration;
         loadingCsv = requested;
         new Thread(() -> {
             List<AppItem> prepared = loadApps(requested);
             main.post(() -> {
-                if (requested.equals(loadingCsv)) {
+                if (generation == iconGeneration && requested.equals(loadingCsv)) {
                     cachedApps = Collections.unmodifiableList(prepared);
                     cachedCsv = requested;
                     loadingCsv = null;
@@ -96,6 +98,15 @@ final class CornerAppMenu {
                 }
             });
         }, "mback-icon-cache").start();
+    }
+
+    void invalidateIcons() {
+        iconGeneration++;
+        cachedCsv = null;
+        loadingCsv = null;
+        extraIcons.evictAll();
+        refreshingExtra = false;
+        prepare();
     }
 
     boolean isOpened() { return view != null; }
@@ -261,13 +272,18 @@ final class CornerAppMenu {
     void refreshExtraApps() {
         if (refreshingExtra) return;
         refreshingExtra = true;
+        final int generation = iconGeneration;
         new Thread(() -> {
             try {
                 ExtraApps prepared = resolveExtraApps();
-                main.post(() -> { cachedExtra = prepared; refreshingExtra = false; });
+                main.post(() -> {
+                    if (generation != iconGeneration) return;
+                    cachedExtra = prepared;
+                    refreshingExtra = false;
+                });
             } catch (Throwable error) {
                 XposedBridge.log(TAG + " ring refresh failed: " + error);
-                main.post(() -> refreshingExtra = false);
+                main.post(() -> { if (generation == iconGeneration) refreshingExtra = false; });
             }
         }, "mback-recent-cache").start();
     }
@@ -287,11 +303,12 @@ final class CornerAppMenu {
     }
 
     private List<AppItem> resolveRingApps(List<ShortcutStore.Item> sources) {
+        final int generation = iconGeneration;
         ArrayList<AppItem> result = new ArrayList<>(), waiting = new ArrayList<>();
         ArrayList<ShortcutStore.Item> missing = new ArrayList<>();
         ArrayList<String> keys = new ArrayList<>();
         for (ShortcutStore.Item source : sources) {
-            String key = source.target.id() + ":" + source.icon;
+            String key = generation + ":" + source.target.id() + ":" + source.icon;
             AppItem item = extraIcons.get(key);
             if (item == null) {
                 if (placeholderOriginal == null) {
@@ -313,6 +330,7 @@ final class CornerAppMenu {
                 try {
                     AppItem loaded = loadApp(missing.get(i));
                     main.post(() -> {
+                        if (generation != iconGeneration) return;
                         item.circle = loaded.circle;
                         item.original = loaded.original;
                         if (view != null) view.invalidate();

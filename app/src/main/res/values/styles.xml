@@ -1,0 +1,22 @@
+<resources>
+    <style name="MBackTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:colorAccent">#28684E</item>
+        <item name="android:colorControlHighlight">#2228684E</item>
+        <item name="android:textColorPrimary">#183F32</item>
+        <item name="android:textColorSecondary">#5D6C62</item>
+        <item name="android:colorBackground">#F4F6F3</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:alertDialogTheme">@style/MBackDialogTheme</item>
+    </style>
+    <style name="MBackDialogTheme" parent="android:style/Theme.Material.Light.Dialog.Alert">
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:colorAccent">#28684E</item>
+        <item name="android:textColorPrimary">#183F32</item>
+        <item name="android:textColorSecondary">#5D6C62</item>
+        <item name="android:colorBackground">#F4F6F3</item>
+        <item name="android:colorControlHighlight">#2228684E</item>
+    </style>
+</resources>

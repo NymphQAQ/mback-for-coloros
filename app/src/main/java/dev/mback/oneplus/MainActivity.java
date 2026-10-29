@@ -34,12 +34,12 @@ import java.io.InputStreamReader;
 import java.util.ArrayList;
 
 public final class MainActivity extends Activity {
-    static final int INK = 0xFF183F32, MUTED = 0xFF5D6C62, BACKGROUND = 0xFFF4F6F3;
-    static final int GREEN = 0xFF28684E, PALE = 0xFFE1F0E7, BORDER = 0xFFE6EBE5;
+    static final int INK = AppUi.INK, MUTED = AppUi.MUTED, BACKGROUND = AppUi.BACKGROUND;
+    static final int GREEN = AppUi.GREEN, PALE = AppUi.PALE, BORDER = AppUi.BORDER;
     private static final int MOTION = 1, HAPTICS = 2, INTERACTION = 3, LAYOUT = 4,
-            ICONS = 5, OUTER = 6, INNER = 7, TRANSIT = 8;
+            ICONS = 5, OUTER = 6, INNER = 7, TRANSIT = 8, WINDOWS = 9, HANDLES = 10;
     private static final String[] DETAIL_TITLES = {"", "动作反馈", "触觉反馈", "呼出与交互",
-            "圆弧布局", "图标与触感", "外圈设置", "内圈设置", "乘车码启动方式"};
+            "圆弧布局", "图标与触感", "外圈设置", "内圈设置", "乘车码启动方式", "系统小窗设置", "小窗底部白条"};
     private final ArrayList<Runnable> readers = new ArrayList<>();
     private final ScrollView[] pages = new ScrollView[2];
     private final Button[] tabs = new Button[2];
@@ -62,13 +62,7 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
-        getWindow().setStatusBarColor(Color.TRANSPARENT);
-        getWindow().setNavigationBarColor(Color.TRANSPARENT);
-        getWindow().getDecorView().setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                        | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
-        getWindow().setNavigationBarContrastEnforced(false);
+        AppUi.window(this);
         root = column();
         root.setBackgroundColor(BACKGROUND);
         root.setForceDarkAllowed(false);
@@ -121,7 +115,7 @@ public final class MainActivity extends Activity {
         refresh();
         if (state != null) {
             int page = state.getInt("detail");
-            if (page >= MOTION && page <= TRANSIT) {
+            if (page >= MOTION && page <= HANDLES) {
                 openSettings(page);
                 int scrollY = state.getInt("detail_scroll");
                 ScrollView restored = detailPage;
@@ -204,6 +198,12 @@ public final class MainActivity extends Activity {
         divider(extras);
         entry(extras, "打开返回测试页", () -> "检查轻触返回与底部触控",
                 () -> startActivity(new Intent(this, TestActivity.class)));
+        divider(extras);
+        entry(extras, "备份与恢复", () -> "设置 · 快捷项 · 图标库与图标包",
+                () -> {
+                    if (pendingWrites > 0) { showMessage("正在保存，请稍后打开备份", false); return; }
+                    startActivity(new Intent(this, BackupActivity.class));
+                });
         footer(body, "更改自动保存，调整后立即生效。");
     }
 
@@ -256,7 +256,110 @@ public final class MainActivity extends Activity {
         entry(settings, "图标与触感", () -> (readGlobal(ArcConfig.ORIGINAL_ICON_KEY, 0) == 1 ? "原始形状" : "完整圆形")
                 + " · 中圈 " + ArcConfig.icon(readGlobal(ArcConfig.ICON_SIZE_KEY, ArcConfig.DEFAULT_ICON))
                 + " dp · 滑选震动", () -> openSettings(ICONS));
+        divider(settings);
+        entry(settings, "系统小窗设置", () -> "位置 · 窗外点击 · 底部白条手势", () -> openSettings(WINDOWS));
         footer(body, "选中图标后松手打开 · 更改自动保存");
+    }
+
+    private void windowControls(LinearLayout body) {
+        LinearLayout gestures = card(body);
+        entry(gestures, "小窗底部白条", () -> "双击动作 · 长按移动 · 就绪震动", () -> openSettings(HANDLES));
+        section(body, "打开位置");
+        LinearLayout position = card(body);
+        TextView state = text("", 12, GREEN, true);
+        state.setPadding(0, dp(12), 0, dp(12));
+        position.addView(state);
+        readers.add(() -> {
+            int boot = readGlobal(Settings.Global.BOOT_COUNT, -1);
+            boolean ready = (WindowPlacement.HOOK_VERSION + ":" + boot).equals(
+                    Settings.Global.getString(getContentResolver(), WindowPlacement.READY));
+            state.setText(ready ? "系统小窗控制已就绪" : "请在模块作用域勾选“系统框架”，然后重启手机");
+        });
+        toggle(position, "统一默认位置", "应用于本机屏幕上的 ColorOS 原生应用小窗，关闭则由系统决定位置", WindowPlacement.ENABLED);
+        divider(position);
+        slider(position, "横向位置", "0% 靠左，50% 居中，100% 靠右；保留系统安全边距", WindowPlacement.X,
+                0, 100, 1, WindowPlacement.DEFAULT_X, "%");
+        divider(position);
+        slider(position, "纵向位置", "0% 靠上，50% 居中，100% 靠下；避开状态栏与导航栏", WindowPlacement.Y,
+                0, 100, 1, WindowPlacement.DEFAULT_Y, "%");
+        Button preview = button("打开位置预览小窗", true);
+        preview.setOnClickListener(v -> {
+            if (pendingWrites > 0) { showMessage("正在保存，请稍后打开预览", false); return; }
+            new FreeformLauncher(this).open(ShortcutTarget.parse(
+                    "dev.mback.oneplus/dev.mback.oneplus.WindowPreviewActivity"));
+        });
+        position.addView(preview, actionParams());
+        footer(body, "使用真实系统小窗预览。位置在下次打开或恢复小窗时应用，已展开的小窗仍可手动拖动；窗口大小由系统与应用决定。");
+
+        section(body, "点击小窗外");
+        LinearLayout choices = card(body);
+        RadioGroup modes = new RadioGroup(this);
+        String[] labels = {"关闭此功能（默认）", "收起并保留页面", "结束小窗任务", "转至后台"};
+        String[] hints = {"保留系统原有行为。", "收起到系统悬浮入口，再打开可继续原来的页面。",
+                "移除当前小窗任务；不强制停止整个应用。未保存的内容可能丢失。",
+                "将小窗任务转入后台，保留任务，不显示悬浮入口。"};
+        int[] ids = new int[labels.length];
+        for (int i = 0; i < labels.length; i++) {
+            RadioButton choice = new RadioButton(this);
+            ids[i] = View.generateViewId();
+            choice.setId(ids[i]);
+            choice.setText(labels[i] + "\n" + hints[i]);
+            choice.setTextSize(14);
+            choice.setTextColor(INK);
+            choice.setButtonTintList(new ColorStateList(new int[][]{{android.R.attr.state_checked}, {}},
+                    new int[]{GREEN, MUTED}));
+            choice.setPadding(0, dp(16), 0, dp(16));
+            choice.setMinimumHeight(dp(88));
+            modes.addView(choice, new RadioGroup.LayoutParams(-1, -2));
+        }
+        choices.addView(modes);
+        readers.add(() -> modes.check(ids[WindowPlacement.outside(readGlobal(WindowPlacement.OUTSIDE, 0))]));
+        modes.setOnCheckedChangeListener((group, id) -> {
+            if (switching) return;
+            for (int i = 0; i < ids.length; i++) if (id == ids[i])
+                writeGlobal(WindowPlacement.OUTSIDE, i, "窗外点击方式");
+        });
+        divider(choices);
+        toggle(choices, "拦截窗外点击", "选择收起、结束任务或转至后台后生效，阻止窗外触摸操作底下的应用，默认关闭", WindowPlacement.BLOCK_OUTSIDE);
+        footer(body, "轻点所有小窗以外的区域时作用于当前展开的小窗。开启拦截后，窗外滑动、长按和多指也不会操作底下的应用，且不执行所选的窗外点击操作。键盘、通知栏、锁屏与屏幕边缘手势不受影响。悬浮入口、画中画和普通悬浮控件不受影响。");
+    }
+
+    private void handleControls(LinearLayout body) {
+        footer(body, "作用于应用小窗自身底部的白条。首次安装更新需在“系统框架”作用域重启手机；之后更改自动保存。");
+        section(body, "双击白条");
+        LinearLayout actions = card(body);
+        RadioGroup modes = new RadioGroup(this);
+        String[] labels = {"保留系统行为（默认）", "转至后台", "右上角预览"};
+        String[] hints = {"不增加双击动作。", "保留当前任务与页面，转到后台。", "将当前小窗缩为系统预览窗。"};
+        int[] ids = new int[labels.length];
+        for (int i = 0; i < labels.length; i++) {
+            RadioButton choice = new RadioButton(this);
+            ids[i] = View.generateViewId();
+            choice.setId(ids[i]);
+            choice.setText(labels[i] + "\n" + hints[i]);
+            choice.setTextSize(14);
+            choice.setTextColor(INK);
+            choice.setButtonTintList(new ColorStateList(new int[][]{{android.R.attr.state_checked}, {}},
+                    new int[]{GREEN, MUTED}));
+            choice.setPadding(0, dp(14), 0, dp(14));
+            choice.setMinimumHeight(dp(80));
+            modes.addView(choice, new RadioGroup.LayoutParams(-1, -2));
+        }
+        actions.addView(modes);
+        readers.add(() -> modes.check(ids[Math.max(0, Math.min(2,
+                readGlobal(HandleGestureConfig.DOUBLE_TAP, 0)))]));
+        modes.setOnCheckedChangeListener((group, id) -> {
+            if (switching) return;
+            for (int i = 0; i < ids.length; i++) if (id == ids[i])
+                writeGlobal(HandleGestureConfig.DOUBLE_TAP, i, "双击白条动作");
+        });
+        section(body, "滑动与移动");
+        LinearLayout gestures = card(body);
+        toggle(gestures, "长按白条移动", "按住约 0.5 秒，震动后可拖动移动小窗；直接拖动保持系统行为",
+                HandleGestureConfig.HOLD_MOVE);
+        divider(gestures);
+        slider(gestures, "长按就绪震动", "进入可拖动状态时震动一次；0 为关闭，1–10 级逐级增强",
+                HandleGestureConfig.HOLD_VIBRATION, 0, 10, 1, HandleGestureConfig.DEFAULT_VIBRATION, " 级");
     }
 
     private String ringSummary(RingConfig ring) {
@@ -329,6 +432,13 @@ public final class MainActivity extends Activity {
     }
 
     private void iconControls(LinearLayout body) {
+        LinearLayout assets = card(body);
+        entry(assets, "图标包", () -> IconPackStore.activeName(this) + " · 导入与切换",
+                () -> startActivity(new Intent(this, IconLibraryActivity.class).putExtra(IconLibraryActivity.EXTRA_TAB, 1)));
+        divider(assets);
+        entry(assets, "图标库", () -> "导入过的图标保存在这里，可再次选用",
+                () -> startActivity(new Intent(this, IconLibraryActivity.class)));
+        section(body, "显示与触感");
         LinearLayout icons = card(body);
         slider(icons, "图标大小", "快捷项和更多入口一起调整", ArcConfig.ICON_SIZE_KEY,
                 ArcConfig.ICON_MIN, ArcConfig.ICON_MAX, ArcConfig.ICON_STEP, ArcConfig.DEFAULT_ICON, " dp");
@@ -385,6 +495,8 @@ public final class MainActivity extends Activity {
             case OUTER: ringControls(body, RingConfig.OUTER); break;
             case INNER: ringControls(body, RingConfig.INNER); break;
             case TRANSIT: transitControls(body); break;
+            case WINDOWS: windowControls(body); break;
+            case HANDLES: handleControls(body); break;
         }
         footer(body, "更改自动保存，返回无需确认。");
         scroll.addView(body);
@@ -451,17 +563,21 @@ public final class MainActivity extends Activity {
 
     private void openRangePreview() {
         if (rangeDialog != null) return;
-        Dialog dialog = new Dialog(this);
+        Dialog dialog = new Dialog(this, getApplicationInfo().theme);
         dialog.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
         LinearLayout body = column();
         body.setBackgroundColor(BACKGROUND);
-        body.setPadding(dp(18), dp(8), dp(18), dp(8));
-        LinearLayout heading = new LinearLayout(this);
-        heading.setGravity(Gravity.CENTER_VERTICAL);
-        heading.addView(text("呼出范围与预览", 20, INK, true), new LinearLayout.LayoutParams(0, -2, 1));
+        body.setPadding(dp(20), dp(8), dp(20), dp(8));
+        body.setOnApplyWindowInsetsListener((view, insets) -> {
+            body.setPadding(dp(20) + insets.getSystemWindowInsetLeft(), dp(8) + insets.getSystemWindowInsetTop(),
+                    dp(20) + insets.getSystemWindowInsetRight(), dp(8) + insets.getSystemWindowInsetBottom());
+            return insets.consumeSystemWindowInsets();
+        });
         Button close = button("关闭", false);
         close.setOnClickListener(v -> dialog.dismiss());
-        heading.addView(close, new LinearLayout.LayoutParams(dp(72), dp(48)));
+        close.setLayoutParams(new LinearLayout.LayoutParams(dp(72), dp(48)));
+        LinearLayout heading = AppUi.header(this, "呼出范围与预览", null, close);
+        heading.setPadding(0, 0, 0, dp(4));
         body.addView(heading);
         CornerPreview preview = new CornerPreview(this);
         cornerPreview = preview;
@@ -515,6 +631,7 @@ public final class MainActivity extends Activity {
         rangeDialog = dialog;
         dialog.show();
         android.view.Window window = dialog.getWindow();
+        AppUi.window(window);
         window.setBackgroundDrawableResource(android.R.color.transparent);
         window.setLayout(-1, -1);
         refresh();
@@ -614,7 +731,8 @@ public final class MainActivity extends Activity {
         parent.addView(explanation);
         Runnable render = () -> {
             int number = min + slider.getProgress() * step;
-            value.setText(number == 0 ? "关闭" : number + suffix);
+            boolean coordinate = WindowPlacement.X.equals(key) || WindowPlacement.Y.equals(key);
+            value.setText(number == 0 && !coordinate ? "关闭" : number + suffix);
             slider.setContentDescription(title + "，" + value.getText());
             if (FeedbackConfig.VIBRATION_KEY.equals(key)) vibrationPreviewLevel = number;
             if (cornerPreview != null) cornerPreview.setValue(key, number);
@@ -704,32 +822,19 @@ public final class MainActivity extends Activity {
     }
 
     private LinearLayout column() {
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        return layout;
+        return AppUi.column(this);
     }
 
     private LinearLayout card(LinearLayout parent) {
-        LinearLayout card = column();
-        card.setPadding(dp(18), dp(4), dp(18), dp(4));
-        GradientDrawable background = shape(Color.WHITE, 24);
-        background.setStroke(dp(1), BORDER);
-        card.setBackground(background);
-        parent.addView(card, new LinearLayout.LayoutParams(-1, -2));
-        return card;
+        return AppUi.card(parent);
     }
 
     private void section(LinearLayout parent, String title) {
-        TextView label = text(title, 13, MUTED, true);
-        label.setPadding(dp(3), dp(18), 0, dp(9));
-        label.setAccessibilityHeading(true);
-        parent.addView(label);
+        AppUi.section(parent, title);
     }
 
     private void footer(LinearLayout parent, String content) {
-        TextView footnote = text(content, 12, MUTED, false);
-        footnote.setPadding(dp(3), dp(18), dp(3), dp(8));
-        parent.addView(footnote);
+        AppUi.footer(parent, content);
     }
 
     private void divider(LinearLayout parent) {
@@ -739,29 +844,11 @@ public final class MainActivity extends Activity {
     }
 
     private TextView text(String content, int size, int color, boolean bold) {
-        TextView view = new TextView(this);
-        view.setText(content);
-        view.setTextSize(size);
-        view.setTextColor(color);
-        view.setTypeface(Typeface.create(bold ? "sans-serif-medium" : "sans-serif", Typeface.NORMAL));
-        view.setIncludeFontPadding(false);
-        return view;
+        return AppUi.text(this, content, size, color, bold);
     }
 
     private Button button(String title, boolean filled) {
-        Button button = new Button(this);
-        button.setText(title);
-        button.setAllCaps(false);
-        button.setTextSize(14);
-        button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        button.setTextColor(filled ? Color.WHITE : INK);
-        button.setBackground(ripple(filled ? INK : PALE, 16));
-        button.setStateListAnimator(null);
-        button.setElevation(0);
-        button.setMinimumHeight(dp(48));
-        button.setMinHeight(dp(48));
-        button.setPadding(dp(14), dp(10), dp(14), dp(10));
-        return button;
+        return AppUi.button(this, title, filled);
     }
 
     private LinearLayout.LayoutParams actionParams() {
@@ -771,14 +858,11 @@ public final class MainActivity extends Activity {
     }
 
     private GradientDrawable shape(int color, int radius) {
-        GradientDrawable shape = new GradientDrawable();
-        shape.setColor(color);
-        shape.setCornerRadius(dp(radius));
-        return shape;
+        return AppUi.shape(this, color, radius);
     }
 
     private RippleDrawable ripple(int color, int radius) {
-        return new RippleDrawable(ColorStateList.valueOf(0x2228684E), shape(color, radius), shape(Color.WHITE, radius));
+        return AppUi.ripple(this, color, radius);
     }
 
     private int dp(int value) { return Math.round(getResources().getDisplayMetrics().density * value); }

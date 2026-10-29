@@ -3,7 +3,7 @@
     <uses-permission android:name="android.permission.VIBRATE"/>
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
-    <application android:allowBackup="false" android:label="MBack · Xposed" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+    <application android:allowBackup="false" android:label="MBack · Xposed" android:theme="@style/MBackTheme">
         <meta-data android:name="xposedmodule" android:value="true"/>
         <meta-data android:name="xposedminversion" android:value="82"/>
         <meta-data android:name="xposeddescription" android:value="ColorOS mBack 与 Flyme 风格边角小窗菜单"/>
@@ -11,6 +11,11 @@
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
         </activity>
         <activity android:name=".TestActivity" android:exported="false"/>
+        <activity android:name=".BackupActivity" android:exported="false" android:label="备份与恢复"/>
+        <activity android:name=".IconLibraryActivity" android:exported="false" android:label="图标库"/>
+        <activity android:name=".WindowPreviewActivity" android:exported="true"
+                  android:label="小窗位置预览" android:resizeableActivity="true"
+                  android:taskAffinity="dev.mback.oneplus.windowpreview" android:launchMode="singleTask"/>
         <activity android:name=".WechatTransitActivity" android:exported="true"
                   android:permission="android.permission.STATUS_BAR"
                   android:theme="@android:style/Theme.NoDisplay"

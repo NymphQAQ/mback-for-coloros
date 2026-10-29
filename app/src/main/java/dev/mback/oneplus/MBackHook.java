@@ -41,6 +41,11 @@ public final class MBackHook implements IXposedHookLoadPackage {
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam packageParam) {
+        if ("android".equals(packageParam.packageName)) {
+            NativeWindowHook.install(packageParam.classLoader);
+            NativeHandleGestures.install(packageParam.classLoader);
+            return;
+        }
         if ("com.android.launcher".equals(packageParam.packageName)) {
             hookLauncherGesturePipeline(packageParam.classLoader);
             return;
@@ -86,7 +91,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                 if (param.thisObject instanceof ViewGroup) detach((ViewGroup) param.thisObject);
             }
         });
-        XposedBridge.log(TAG + " v0.7.4-icon-motion34 registered: " + cls.getName()
+        XposedBridge.log(TAG + " v0.8.4-window44 registered: " + cls.getName()
                 + " dispatch=" + dispatchOwner.getName());
     }
 
@@ -286,6 +291,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
         private final View cover;
         private final Handler handler = new Handler(Looper.getMainLooper());
         private final ContentObserver settingObserver;
+        private final ContentObserver iconObserver;
         private final Runnable onShadeChange;
         private Object insetsListener;
         private boolean active;
@@ -308,6 +314,11 @@ public final class MBackHook implements IXposedHookLoadPackage {
 
         Interceptor(ViewGroup root) {
             this.root = root;
+            iconObserver = new ContentObserver(handler) {
+                @Override public void onChange(boolean selfChange) {
+                    if (cornerMenu != null) cornerMenu.invalidateIcons();
+                }
+            };
             this.cover = new View(root.getContext());
             cover.setClickable(true);
             // Parent dispatch is hooked directly, as ColorOS may intercept events before child views.
@@ -364,6 +375,9 @@ public final class MBackHook implements IXposedHookLoadPackage {
                     Settings.Global.getUriFor(CornerAppMenu.APPS_KEY), false, settingObserver);
             root.getContext().getContentResolver().registerContentObserver(
                     Settings.Global.getUriFor(ShortcutStore.KEY), false, settingObserver);
+            for (String key : new String[]{IconPackStore.MAP_KEY, IconPackStore.REVISION_KEY})
+                root.getContext().getContentResolver().registerContentObserver(
+                        Settings.Global.getUriFor(key), false, iconObserver);
             for (RingConfig ring : new RingConfig[]{RingConfig.OUTER, RingConfig.INNER}) {
                 for (String key : new String[]{ShortcutStore.key(ring.ring), ring.enableKey, ring.recentKey,
                         ring.countKey, ring.iconKey}) root.getContext().getContentResolver()
@@ -391,6 +405,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
             if (cornerMenu != null) cornerMenu.hide();
             restoreHandle();
             root.getContext().getContentResolver().unregisterContentObserver(settingObserver);
+            root.getContext().getContentResolver().unregisterContentObserver(iconObserver);
             if (insetsListener != null) {
                 try {
                     Class<?> listenerClass = Class.forName("android.view.ViewTreeObserver$OnComputeInternalInsetsListener");

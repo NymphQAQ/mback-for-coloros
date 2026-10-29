@@ -15,12 +15,34 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.IOException;
 import java.security.MessageDigest;
 
 final class ShortcutIcons {
     static final String AUTHORITY = "dev.mback.oneplus.shortcuts";
     static final Uri URI = Uri.parse("content://" + AUTHORITY);
     private static final LruCache<Object, Bitmap> circles = new LruCache<>(48);
+
+    static void clearCache() { circles.evictAll(); }
+
+    static Drawable application(Context context, String pkg, Drawable fallback) {
+        try {
+            String key = IconPackStore.icon(context, pkg, null);
+            if (validKey(key)) {
+                Drawable packed = image(context, key);
+                if (packed != null) return display(context, packed);
+            }
+        } catch (Exception ignored) { /* A missing pack image falls back to the application. */ }
+        return display(context, fallback);
+    }
+
+    static Drawable image(Context context, String key) throws Exception {
+        Uri uri = URI.buildUpon().appendPath("icons").appendPath(key).build();
+        try (InputStream stream = context.getContentResolver().openInputStream(uri)) {
+            Bitmap bitmap = android.graphics.BitmapFactory.decodeStream(stream);
+            return bitmap == null ? null : new BitmapDrawable(context.getResources(), bitmap);
+        }
+    }
 
     static Drawable display(Context context, Drawable source) {
         return useOriginal(context) ? source : circular(context, source, source.getConstantState());
@@ -67,40 +89,62 @@ final class ShortcutIcons {
             } catch (Exception ignored) { /* A removed image falls back to its default icon. */ }
         }
         if (preset != null) return preset.icon(context, original);
+        String packed = IconPackStore.icon(context, item.target.packageName, item.target.activityName);
+        if (validKey(packed)) {
+            try {
+                Drawable icon = image(context, packed);
+                if (icon != null) return original ? icon : circular(context, icon, packed);
+            } catch (Exception ignored) { /* Missing pack entries use their application icon. */ }
+        }
         Drawable icon = context.getPackageManager().getApplicationIcon(item.target.packageName);
         return original ? icon : circular(context, icon, icon.getConstantState());
     }
 
     static String importImage(Context context, Uri uri) throws Exception {
-        Bitmap decoded = ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.getContentResolver(), uri),
+        File input = File.createTempFile("icon-input-", ".image", context.getCacheDir());
+        try {
+            try (InputStream source = context.getContentResolver().openInputStream(uri);
+                 FileOutputStream output = new FileOutputStream(input)) {
+                if (source == null) throw new IOException("无法读取图片");
+                IconPackRules.copy(source, output, 16L * 1024 * 1024);
+            }
+            Bitmap decoded = ImageDecoder.decodeBitmap(ImageDecoder.createSource(input),
                 (decoder, info, source) -> {
                     int width = info.getSize().getWidth(), height = info.getSize().getHeight();
+                    if (width <= 0 || height <= 0 || width > 16384 || height > 16384) throw new IllegalArgumentException("图片尺寸过大");
                     float scale = Math.min(1f, 256f / Math.max(width, height));
                     decoder.setTargetSize(Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale)));
                     decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
                 });
+            try { return save(context, decoded); }
+            finally { decoded.recycle(); }
+        } finally { input.delete(); }
+    }
+
+    static String save(Context context, Bitmap decoded) throws Exception {
         Bitmap square = Bitmap.createBitmap(256, 256, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(square);
         float scale = Math.min(256f / decoded.getWidth(), 256f / decoded.getHeight());
         float width = decoded.getWidth() * scale, height = decoded.getHeight() * scale;
         canvas.drawBitmap(decoded, null, new android.graphics.RectF((256 - width) / 2f, (256 - height) / 2f,
                 (256 + width) / 2f, (256 + height) / 2f), new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG));
-        decoded.recycle();
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         square.compress(Bitmap.CompressFormat.PNG, 100, bytes);
         square.recycle();
         byte[] data = bytes.toByteArray();
         StringBuilder key = new StringBuilder();
         for (byte value : MessageDigest.getInstance("SHA-256").digest(data)) key.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
-        File destination = file(context, key.toString());
-        File directory = destination.getParentFile();
-        if (!directory.isDirectory() && !directory.mkdirs()) throw new java.io.IOException("Cannot create icon directory");
-        if (!destination.exists()) {
-            File pending = File.createTempFile("import-", ".png", directory);
-            try {
-                try (FileOutputStream output = new FileOutputStream(pending)) { output.write(data); }
-                if (!pending.renameTo(destination)) throw new java.io.IOException("Cannot save icon");
-            } finally { pending.delete(); }
+        synchronized (ShortcutIcons.class) {
+            File destination = file(context, key.toString());
+            File directory = destination.getParentFile();
+            if (!directory.isDirectory() && !directory.mkdirs()) throw new java.io.IOException("Cannot create icon directory");
+            if (!destination.exists()) {
+                File pending = File.createTempFile("import-", ".png", directory);
+                try {
+                    try (FileOutputStream output = new FileOutputStream(pending)) { output.write(data); output.getFD().sync(); }
+                    if (!pending.renameTo(destination)) throw new java.io.IOException("Cannot save icon");
+                } finally { pending.delete(); }
+            }
         }
         return key.toString();
     }
