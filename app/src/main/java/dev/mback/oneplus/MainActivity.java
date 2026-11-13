@@ -167,6 +167,9 @@ public final class MainActivity extends Activity {
         LinearLayout body = page(parent, 0);
         LinearLayout enable = card(body);
         toggle(enable, "轻触返回", "轻点屏幕底部小白条即可返回", MBackHook.SETTING, MBackHook.DEFAULT_ENABLED);
+        divider(enable);
+        toggle(enable, "横屏时禁用轻触返回", "横屏时保留系统原有触摸处理，竖屏仍可轻触返回",
+                MBackHook.DISABLE_LANDSCAPE);
 
         section(body, "手感设置");
         LinearLayout feedback = card(body);

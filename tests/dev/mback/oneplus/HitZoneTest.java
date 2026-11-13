@@ -1,43 +1,26 @@
 package dev.mback.oneplus;
 
+import java.util.Arrays;
+
 public final class HitZoneTest {
     public static void main(String[] args) {
-        int[] portrait = HitZone.bounds(1272, 131, 636, 48);
-        assertContains(portrait, 636, 130, "portrait bottom-most pixel");
-        assertContains(portrait, 636, 83, "portrait top of reported navigation inset");
-        assertOutside(portrait, 931, 34, "app tab label above system inset");
-        assertOutside(portrait, 636, 82, "pixel immediately above inset reaches app");
-        assertContains(portrait, 300, 110, "portrait wider thumb hit");
-        assertOutside(portrait, 100, 130, "portrait distant app edge");
-
-        int[] landscape = HitZone.bounds(131, 2772, 1386, 48);
-        assertContains(landscape, 130, 1386, "landscape short-axis edge");
-        assertContains(landscape, 0, 1386, "landscape rotated edge");
-        assertContains(landscape, 60, 850, "landscape wider thumb hit");
-        assertOutside(landscape, 60, 200, "landscape edge away from handle");
-
-        int[] shifted = HitZone.bounds(1272, 131, 1190, 48);
-        assertContains(shifted, 1271, 130, "handle near right edge clamps rectangle");
-        assertOutside(shifted, 0, 120, "handle right is not mirrored");
-
-        int[] fallback = HitZone.bounds(1272, 131, 636, 0);
-        assertContains(fallback, 636, 0, "unknown inset keeps original hit region");
-        int[] oversized = HitZone.bounds(1272, 131, 636, 200);
-        assertContains(oversized, 636, 0, "large inset clamps to window");
-        int[] empty = HitZone.bounds(0, 131, 0, 48);
-        check(empty[0] == empty[2] && empty[1] == empty[3], "zero width");
-        System.out.println("HitZoneTest: all 15 assertions passed");
+        int[] portrait = HitZone.bounds(1272, 131, 48);
+        assert Arrays.equals(portrait, new int[]{424, 83, 848, 131});
+        assert contains(portrait, 636, 84) : "Blank space above the pill";
+        assert contains(portrait, 636, 130) : "Blank space below the pill";
+        assert !contains(portrait, 423, 110) : "Left third belongs to the system";
+        assert !contains(portrait, 848, 110) : "Right third belongs to the system";
+        assert !contains(portrait, 636, 82) : "App content above the navigation inset";
+        assert Arrays.equals(HitZone.bounds(2772, 131, 48), new int[]{924, 83, 1848, 131});
+        assert Arrays.equals(HitZone.bounds(131, 2772, 48), new int[]{0, 924, 131, 1848});
+        assert Arrays.equals(HitZone.bounds(1273, 131, 48), new int[]{424, 83, 849, 131});
+        assert Arrays.equals(HitZone.bounds(1272, 131, 200), new int[]{424, 0, 848, 131});
+        assert Arrays.equals(HitZone.bounds(1272, 131, 0), new int[4]);
+        assert Arrays.equals(HitZone.bounds(0, 131, 48), new int[4]);
+        System.out.println("HitZoneTest passed: center third, full inset height, rotation and empty bounds");
     }
 
-    private static void assertContains(int[] rect, int x, int y, String description) {
-        check(x >= rect[0] && x < rect[2] && y >= rect[1] && y < rect[3], description);
-    }
-
-    private static void assertOutside(int[] rect, int x, int y, String description) {
-        check(x < rect[0] || x >= rect[2] || y < rect[1] || y >= rect[3], description);
-    }
-
-    private static void check(boolean condition, String description) {
-        if (!condition) throw new AssertionError(description);
+    private static boolean contains(int[] bounds, int x, int y) {
+        return x >= bounds[0] && x < bounds[2] && y >= bounds[1] && y < bounds[3];
     }
 }

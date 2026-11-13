@@ -25,6 +25,15 @@ def navigation_window(dump: str) -> str:
                 if "name=" in line and "NavigationBar_displayId_0," in line)
 
 
+def pill_center(window: str) -> tuple[int, int]:
+    region = window.split("touchableRegion=", 1)[1].split(", ownerPid=", 1)[0]
+    boxes = [tuple(map(int, values)) for values in re.findall(
+        r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]", region)]
+    assert boxes, "Visible pill input region is empty"
+    left, top, right, bottom = max(boxes, key=lambda r: (r[2] - r[0]) * (r[3] - r[1]))
+    return (left + right) // 2, (top + bottom) // 2
+
+
 def vibrations() -> set[str]:
     return {line.strip() for line in adb("shell", "dumpsys", "vibrator_manager").splitlines()
             if "| com.android.systemui " in line and "| start:" in line}
@@ -74,15 +83,14 @@ def main() -> None:
             wait_shade(False)
             time.sleep(0.5)
             dump = adb("shell", "dumpsys", "input")
-            assert "touchableRegion=<empty>" not in navigation_window(dump), (
-                "Tap-back region did not recover after collapse")
+            pill_x, pill_y = pill_center(navigation_window(dump))
             for side in ("Left", "Right"):
                 assert re.search(r"name=.*MBack Corner Shield " + side, dump), side
             adb("shell", "cmd", "statusbar", panel)
             wait_shade(True)
             time.sleep(0.4)
             before = vibrations()
-            adb("shell", "input", "tap", str(width // 2), str(bottom - 12))
+            adb("shell", "input", "tap", str(pill_x), str(pill_y))
             wait_shade(False)
             time.sleep(0.2)
             level = adb("shell", "settings", "get", "global", "mback_vibration_level").strip()

@@ -1,24 +1,15 @@
 package dev.mback.oneplus;
 
-/**
- * Geometry of the tap-catching region in the actual SystemUI navigation window.
- * Coordinates are local to NavigationBarView, not raw touchscreen coordinates.
- */
+/** The center third of the system navigation inset, in NavigationBarView coordinates. */
 final class HitZone {
-    private static final float BOTTOM_WIDTH_FRACTION = 0.68f;
-    private static final float SIDE_LENGTH_FRACTION = 0.52f;
-
-    static int[] bounds(int width, int height, int center, int bottomInset) {
-        if (width <= 0 || height <= 0) return new int[]{0, 0, 0, 0};
-        boolean horizontal = width >= height;
-        int length = horizontal ? width : height;
-        float fraction = horizontal ? BOTTOM_WIDTH_FRACTION : SIDE_LENGTH_FRACTION;
-        int span = Math.min(length, Math.max(1, Math.round(length * fraction)));
-        int start = Math.max(0, Math.min(length - span, center - span / 2));
-        int top = bottomInset > 0 ? Math.max(0, height - bottomInset) : 0;
-        return horizontal
-                ? new int[]{start, top, start + span, height}
-                : new int[]{0, start, width, start + span};
+    static int[] bounds(int width, int height, int navigationHeight) {
+        if (width <= 0 || height <= 0 || navigationHeight <= 0) return new int[]{0, 0, 0, 0};
+        if (width >= height) {
+            int side = width / 3;
+            return new int[]{side, Math.max(0, height - navigationHeight), width - side, height};
+        }
+        int side = height / 3;
+        return new int[]{0, side, width, height - side};
     }
 
     private HitZone() {}

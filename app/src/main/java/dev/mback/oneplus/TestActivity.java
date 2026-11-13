@@ -22,7 +22,7 @@ public final class TestActivity extends Activity {
         AppUi.section(body, "操作说明");
         LinearLayout information = AppUi.card(body);
         TextView instructions = AppUi.text(this,
-                "点小白条应返回上一页，不能误点到底下的按钮。\n\n上滑应回桌面。可切换横屏再测试。", 15, AppUi.MUTED, false);
+                "点导航栏中间三分之一应返回，白条上下的空白也能点。左右两段不触发返回，底部按钮可检查触摸是否传到应用。\n\n上滑应回桌面。可切换横屏再测试。", 15, AppUi.MUTED, false);
         instructions.setPadding(0, dp(16), 0, dp(16));
         instructions.setLineSpacing(dp(3), 1);
         information.addView(instructions);

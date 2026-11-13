@@ -27,7 +27,7 @@ final class SettingsArchive {
     private static final String MANIFEST = "mback.properties";
     private static final String[] DIRECTORIES = {"shortcut-icons", "icon-packs"};
     static final Set<String> KEYS = Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
-            "mback_xposed_enabled", "mback_scale_percent", "mback_scale_duration_ms", "mback_vibration_level",
+            "mback_xposed_enabled", "mback_disable_landscape", "mback_scale_percent", "mback_scale_duration_ms", "mback_vibration_level",
             "mback_corner_menu_enabled", "mback_corner_menu_apps", "mback_shortcuts_v2",
             "mback_inner_shortcuts_v1", "mback_outer_shortcuts_v1", "mback_arc_radius_percent",
             "mback_arc_icon_size_dp", "mback_arc_original_icons", "mback_arc_side_margin_dp",

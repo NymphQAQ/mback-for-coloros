@@ -1,6 +1,7 @@
 package dev.mback.oneplus;
 
 import android.database.ContentObserver;
+import android.content.res.Configuration;
 import android.os.Vibrator;
 import android.animation.TimeInterpolator;
 import android.view.animation.AccelerateDecelerateInterpolator;
@@ -30,11 +31,11 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 /**
  * Hooks SystemUI's NavigationBarView, not applications or /dev/input.
  * The SystemUI navigation window has an empty touchable region on ColorOS gesture mode.
- * The hit region follows the bottom navigation inset and reaches the screen edge,
- * so taps above the navigation bar still reach application controls.
+ * MBack contributes only the center third of the navigation inset to that input region.
  */
 public final class MBackHook implements IXposedHookLoadPackage {
     public static final String SETTING = "mback_xposed_enabled";
+    static final String DISABLE_LANDSCAPE = "mback_disable_landscape";
     static final int DEFAULT_ENABLED = 1;
     private static final String TAG = "[MBack]";
     private static final WeakHashMap<ViewGroup, Interceptor> INSTANCES = new WeakHashMap<>();
@@ -91,7 +92,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
                 if (param.thisObject instanceof ViewGroup) detach((ViewGroup) param.thisObject);
             }
         });
-        XposedBridge.log(TAG + " v0.8.4-window44 registered: " + cls.getName()
+        XposedBridge.log(TAG + " v0.8.7 landscape-toggle registered: " + cls.getName()
                 + " dispatch=" + dispatchOwner.getName());
     }
 
@@ -286,15 +287,15 @@ public final class MBackHook implements IXposedHookLoadPackage {
         if (interceptor != null) interceptor.detach();
     }
 
-    private static final class Interceptor implements View.OnTouchListener {
+    private static final class Interceptor {
         private final ViewGroup root;
-        private final View cover;
         private final Handler handler = new Handler(Looper.getMainLooper());
         private final ContentObserver settingObserver;
         private final ContentObserver iconObserver;
         private final Runnable onShadeChange;
         private Object insetsListener;
         private boolean active;
+        private boolean disableLandscape;
         private boolean cornerEnabled;
         private CornerAppMenu cornerMenu;
         private CornerMonitor cornerMonitor;
@@ -304,7 +305,9 @@ public final class MBackHook implements IXposedHookLoadPackage {
         private View animatedHandle;
         private boolean handleLogged;
         private boolean pivotLogged;
-        private final Rect hitRect = new Rect();
+        private final Region hitRegion = new Region();
+        private final Region currentHit = new Region();
+        private final int[] rootLocation = new int[2];
         private boolean pressed;
         private boolean moved;
         private float downX, downY;
@@ -319,21 +322,16 @@ public final class MBackHook implements IXposedHookLoadPackage {
                     if (cornerMenu != null) cornerMenu.invalidateIcons();
                 }
             };
-            this.cover = new View(root.getContext());
-            cover.setClickable(true);
-            // Parent dispatch is hooked directly, as ColorOS may intercept events before child views.
-            // A clickable cover keeps the window's region non-pass-through if hooks fail.
-            cover.setOnTouchListener(null);
             onShadeChange = () -> {
                 pressed = false;
-                hitRect.setEmpty();
+                hitRegion.setEmpty();
                 restoreHandle();
                 root.requestLayout();
                 root.invalidate();
             };
             settingObserver = new ContentObserver(handler) {
                 @Override public void onChange(boolean selfChange) {
-                    active = readEnabled();
+                    readBackSettings();
                     cornerEnabled = readCornerEnabled();
                     if (cornerMenu != null) cornerMenu.prepare();
                     if (cornerMonitor != null) {
@@ -342,8 +340,9 @@ public final class MBackHook implements IXposedHookLoadPackage {
                     }
                     if (!cornerEnabled && cornerMenu != null) cornerMenu.hide();
                     loadFeedbackSettings();
-                    if (!active) {
+                    if (!isTapBackActive()) {
                         pressed = false;
+                        hitRegion.setEmpty();
                         restoreHandle();
                     }
                     root.requestLayout();
@@ -353,16 +352,16 @@ public final class MBackHook implements IXposedHookLoadPackage {
         }
 
         void attach() throws Exception {
-            active = readEnabled();
+            readBackSettings();
             cornerEnabled = readCornerEnabled();
             cornerMenu = new CornerAppMenu(root.getContext());
             cornerMonitor = new CornerMonitor(root.getContext(), cornerMenu);
             if (cornerEnabled) cornerMonitor.start();
             loadFeedbackSettings();
-            root.addView(cover, new ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             root.getContext().getContentResolver().registerContentObserver(
                     Settings.Global.getUriFor(SETTING), false, settingObserver);
+            root.getContext().getContentResolver().registerContentObserver(
+                    Settings.Global.getUriFor(DISABLE_LANDSCAPE), false, settingObserver);
             root.getContext().getContentResolver().registerContentObserver(
                     Settings.Global.getUriFor(FeedbackConfig.SCALE_KEY), false, settingObserver);
             root.getContext().getContentResolver().registerContentObserver(
@@ -396,6 +395,7 @@ public final class MBackHook implements IXposedHookLoadPackage {
             add.setAccessible(true);
             add.invoke(root.getViewTreeObserver(), insetsListener);
             ShadeVisibility.addListener(onShadeChange);
+            root.requestLayout();
         }
 
         void detach() {
@@ -415,11 +415,17 @@ public final class MBackHook implements IXposedHookLoadPackage {
                     remove.invoke(root.getViewTreeObserver(), insetsListener);
                 } catch (Exception e) { XposedBridge.log(TAG + " remove insets failed: " + e); }
             }
-            root.removeView(cover);
         }
 
-        private boolean readEnabled() {
-            return Settings.Global.getInt(root.getContext().getContentResolver(), SETTING, DEFAULT_ENABLED) == 1;
+        private void readBackSettings() {
+            android.content.ContentResolver resolver = root.getContext().getContentResolver();
+            active = Settings.Global.getInt(resolver, SETTING, DEFAULT_ENABLED) == 1;
+            disableLandscape = Settings.Global.getInt(resolver, DISABLE_LANDSCAPE, 0) == 1;
+        }
+
+        private boolean isTapBackActive() {
+            return active && (!disableLandscape || root.getResources().getConfiguration().orientation
+                    != Configuration.ORIENTATION_LANDSCAPE);
         }
 
         private boolean readCornerEnabled() {
@@ -532,58 +538,43 @@ public final class MBackHook implements IXposedHookLoadPackage {
         }
 
         private void updateInsets(Object info) {
+            hitRegion.setEmpty();
             try {
-                if (!root.isShown() || !active || ShadeVisibility.isExpanded()) {
-                    hitRect.setEmpty();
-                    return;
-                }
-                Rect hit = calculateHitRect();
-                hitRect.set(hit);
+                if (!isTapBackActive() || ShadeVisibility.isExpanded()) return;
+                calculateHitRegion(hitRegion);
+                if (hitRegion.isEmpty()) return;
                 Field regionField = info.getClass().getField("touchableRegion");
                 Region region = (Region) regionField.get(info);
-                if (!hit.isEmpty()) region.op(hit, Region.Op.UNION);
-                // Corner gestures use a separate SPY input monitor, so extending
-                // the navigation touchable region would just steal corner taps.
                 Method setter = info.getClass().getMethod("setTouchableInsets", int.class);
                 setter.invoke(info, 3); // TOUCHABLE_INSETS_REGION
+                region.op(hitRegion, Region.Op.UNION);
             } catch (Exception e) {
+                hitRegion.setEmpty();
                 XposedBridge.log(TAG + " touch region failed: " + e);
             }
         }
 
-        private Rect calculateHitRect() {
-            int w = root.getWidth(), h = root.getHeight();
-            if (w == 0 || h == 0) return new Rect();
-            boolean horizontal = w >= h;
-            int center = (horizontal ? w : h) / 2;
+        private void calculateHitRegion(Region result) {
+            result.setEmpty();
             View handle = findHandle(root);
-            if (handle != null && handle.isShown()
-                    && handle.getWidth() > 0 && handle.getHeight() > 0) {
-                int[] p = new int[2], base = new int[2];
-                handle.getLocationInWindow(p);
-                root.getLocationInWindow(base);
-                int candidate = horizontal
-                        ? p[0] - base[0] + handle.getWidth() / 2
-                        : p[1] - base[1] + handle.getHeight() / 2;
-                int length = horizontal ? w : h;
-                if (candidate >= 0 && candidate < length) center = candidate;
-            }
-            // ColorOS's input window extends above the inset reported to applications.
-            int[] bounds = HitZone.bounds(w, h, center, CornerTouchShield.navigationHeight(root.getContext()));
-            return new Rect(bounds[0], bounds[1], bounds[2], bounds[3]);
+            if (handle == null || handle.getWindowVisibility() != View.VISIBLE) return;
+            int[] bounds = HitZone.bounds(root.getWidth(), root.getHeight(),
+                    CornerTouchShield.navigationHeight(root.getContext()));
+            result.set(bounds[0], bounds[1], bounds[2], bounds[3]);
         }
 
         private View findHandle(View view) {
-            if (view != root && view.getClass().getName().contains("NavigationHandle")) {
-                return view;
+            if (!view.isShown() || !(view.getAlpha() > 0f)) return null;
+            String name = view.getClass().getSimpleName();
+            if (name.equals("OplusNavigationHandle") || name.equals("NavigationHandle")) {
+                return view.getWidth() > 0 && view.getHeight() > 0 ? view : null;
             }
             if (!(view instanceof ViewGroup)) return null;
             ViewGroup group = (ViewGroup) view;
             for (int i = 0; i < group.getChildCount(); i++) {
                 View child = group.getChildAt(i);
-                if (child == cover) continue;
                 View handle = findHandle(child);
-                if (handle != null && handle.isShown()) return handle;
+                if (handle != null) return handle;
             }
             return null;
         }
@@ -593,31 +584,38 @@ public final class MBackHook implements IXposedHookLoadPackage {
         }
 
         boolean dispatch(MotionEvent event) {
-            if (!active || ShadeVisibility.isExpanded()) return false;
+            if (!isTapBackActive() || ShadeVisibility.isExpanded()) return false;
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                if (!hitRect.contains((int) event.getX(), (int) event.getY())) return false;
+                pressed = false;
+                if (!containsTouch(hitRegion, event, false)) return false;
             } else if (!pressed) {
                 return false;
             }
-            return onTouch(root, event);
+            return onTouch(event, false);
         }
 
         void observeShadeTouch(MotionEvent event) {
-            if (!active || !ShadeVisibility.isExpanded()) return;
+            if (!isTapBackActive() || !ShadeVisibility.isExpanded()) return;
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
                 pressed = false;
-                int[] location = new int[2];
-                root.getLocationOnScreen(location);
-                if (!root.isShown() || !calculateHitRect().contains(
-                        (int) event.getRawX() - location[0],
-                        (int) event.getRawY() - location[1])) return;
+                calculateHitRegion(currentHit);
+                if (!containsTouch(currentHit, event, true)) return;
             } else if (!pressed) return;
             // Observe taps without claiming the strip needed by native shade swipes.
-            onTouch(root, event);
+            onTouch(event, true);
         }
 
-        @Override public boolean onTouch(View view, MotionEvent event) {
-            if (!active) return false;
+        private boolean containsTouch(Region region, MotionEvent event, boolean fromShade) {
+            float x = event.getX(), y = event.getY();
+            if (fromShade) {
+                root.getLocationOnScreen(rootLocation);
+                x = event.getRawX() - rootLocation[0];
+                y = event.getRawY() - rootLocation[1];
+            }
+            return region.contains((int) Math.floor(x), (int) Math.floor(y));
+        }
+
+        private boolean onTouch(MotionEvent event, boolean fromShade) {
             int action = event.getActionMasked();
             switch (action) {
                 case MotionEvent.ACTION_DOWN:
@@ -639,8 +637,11 @@ public final class MBackHook implements IXposedHookLoadPackage {
                             && event.getEventTime() - downAt >= 0 && event.getEventTime() - downAt <= 380;
                     pressed = false;
                     if (tap) {
-                        playTapFeedback();
-                        injectBack();
+                        calculateHitRegion(currentHit);
+                        if (containsTouch(currentHit, event, fromShade)) {
+                            playTapFeedback();
+                            injectBack();
+                        }
                     }
                     return true;
                 case MotionEvent.ACTION_CANCEL:

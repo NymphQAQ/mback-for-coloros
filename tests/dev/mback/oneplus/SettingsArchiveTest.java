@@ -65,6 +65,7 @@ public final class SettingsArchiveTest {
         String icon = SettingsArchive.hash(PNG);
         String image = "shortcut-icons/" + icon + ".png";
         Map<String, String> values = new LinkedHashMap<>();
+        values.put("mback_disable_landscape", "1");
         values.put("mback_window_x_percent", "27");
         values.put("mback_window_handle_double_tap", "2");
         values.put("mback_window_handle_vibration", "8");
